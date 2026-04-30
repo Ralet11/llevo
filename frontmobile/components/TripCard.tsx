@@ -1,6 +1,9 @@
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
-import { Colors } from '../constants/colors'
 import { Badge } from './ui/Badge'
+import { Card } from './ui/Card'
+import { Icon } from './ui/Icon'
+import { Reveal } from './ui/Reveal'
+import { theme } from '../theme'
 import type { Trip } from '../lib/mockData'
 
 type Props = {
@@ -9,130 +12,240 @@ type Props = {
   showStatus?: boolean
 }
 
-function Stars({ rating }: { rating: number }) {
-  return (
-    <Text style={styles.stars}>
-      {'★'.repeat(Math.floor(rating))}{'☆'.repeat(5 - Math.floor(rating))}
-    </Text>
-  )
-}
-
 export function TripCard({ trip, onPress, showStatus = false }: Props) {
   const date = new Date(trip.departureDate)
   const dateStr = date.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
   const timeStr = date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
+  const accessibilitySummary = [
+    `${trip.originCity} a ${trip.destinationCity}`,
+    `sale ${dateStr} a las ${timeStr}`,
+    trip.availableSeats > 0 ? `${trip.availableSeats} asientos disponibles` : null,
+    trip.availableKg > 0 ? `${trip.availableKg} kilos de carga` : null,
+  ]
+    .filter(Boolean)
+    .join(', ')
 
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.85}>
-      {/* Header: viajero */}
-      <View style={styles.header}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{trip.driver.initials}</Text>
-        </View>
-        <View style={styles.driverInfo}>
-          <View style={styles.driverRow}>
-            <Text style={styles.driverName}>{trip.driver.name}</Text>
-            {trip.driver.isVerified && (
-              <View style={styles.verifiedBadge}>
-                <Text style={styles.verifiedText}>✓</Text>
+    <Reveal>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={onPress}
+        activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilitySummary}
+        accessibilityHint="Abre el detalle del viaje."
+      >
+        <Card style={styles.surface}>
+          <View style={styles.header}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{trip.driver.initials}</Text>
+            </View>
+            <View style={styles.driverInfo}>
+              <View style={styles.driverRow}>
+                <Text style={styles.driverName}>{trip.driver.name}</Text>
+                {trip.driver.isVerified ? (
+                  <View style={styles.verifiedBadge}>
+                    <Icon name="shield" size={12} color={theme.colors.icon.inverse} />
+                  </View>
+                ) : null}
               </View>
-            )}
+              <View style={styles.ratingRow}>
+                <Icon name="star" size={14} color={theme.colors.icon.accent} />
+                <Text style={styles.ratingCount}>
+                  {trip.driver.rating} ({trip.driver.ratingCount})
+                </Text>
+              </View>
+            </View>
+            {showStatus ? <Badge status={trip.status} /> : null}
           </View>
-          <View style={styles.ratingRow}>
-            <Stars rating={trip.driver.rating} />
-            <Text style={styles.ratingCount}> {trip.driver.rating} ({trip.driver.ratingCount})</Text>
-          </View>
-        </View>
-        {showStatus && <Badge status={trip.status} />}
-      </View>
 
-      {/* Ruta */}
-      <View style={styles.route}>
-        <View style={styles.routePoint}>
-          <View style={[styles.dot, { backgroundColor: Colors.navy }]} />
-          <Text style={styles.city}>{trip.originCity}</Text>
-        </View>
-        <View style={styles.routeLine} />
-        <View style={styles.routePoint}>
-          <View style={[styles.dot, { backgroundColor: Colors.amber }]} />
-          <Text style={styles.city}>{trip.destinationCity}</Text>
-        </View>
-      </View>
-
-      {/* Info */}
-      <View style={styles.info}>
-        <View style={styles.infoItem}>
-          <Text style={styles.infoLabel}>Fecha</Text>
-          <Text style={styles.infoValue}>{dateStr}</Text>
-        </View>
-        <View style={styles.infoItem}>
-          <Text style={styles.infoLabel}>Salida</Text>
-          <Text style={styles.infoValue}>{timeStr}</Text>
-        </View>
-        {trip.availableSeats > 0 && (
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Asientos</Text>
-            <Text style={styles.infoValue}>{trip.availableSeats} · ${trip.pricePerSeat.toLocaleString()}</Text>
+          <View style={styles.route}>
+            <View style={styles.routePoint}>
+              <View style={[styles.dot, styles.originDot]} />
+              <Text style={styles.city}>{trip.originCity}</Text>
+            </View>
+            <View style={styles.routeLineWrap}>
+              <View style={styles.routeLine} />
+              <Icon name="arrow-right" size={14} color={theme.colors.icon.muted} />
+            </View>
+            <View style={styles.routePoint}>
+              <View style={[styles.dot, styles.destinationDot]} />
+              <Text style={styles.city}>{trip.destinationCity}</Text>
+            </View>
           </View>
-        )}
-        {trip.availableKg > 0 && (
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Carga</Text>
-            <Text style={styles.infoValue}>{trip.availableKg}kg · ${trip.pricePerKg}/kg</Text>
-          </View>
-        )}
-      </View>
 
-      {trip.notes && (
-        <Text style={styles.notes} numberOfLines={1}>💬 {trip.notes}</Text>
-      )}
-    </TouchableOpacity>
+          <View style={styles.info}>
+            <View style={styles.infoItem}>
+              <View style={styles.infoLabelRow}>
+                <Icon name="calendar" size={14} color={theme.colors.icon.muted} />
+                <Text style={styles.infoLabel}>Fecha</Text>
+              </View>
+              <Text style={styles.infoValue}>{dateStr}</Text>
+            </View>
+            <View style={styles.infoItem}>
+              <View style={styles.infoLabelRow}>
+                <Icon name="clock" size={14} color={theme.colors.icon.muted} />
+                <Text style={styles.infoLabel}>Salida</Text>
+              </View>
+              <Text style={styles.infoValue}>{timeStr}</Text>
+            </View>
+            {trip.availableSeats > 0 ? (
+              <View style={styles.infoItem}>
+                <View style={styles.infoLabelRow}>
+                  <Icon name="users" size={14} color={theme.colors.icon.muted} />
+                  <Text style={styles.infoLabel}>Asientos</Text>
+                </View>
+                <Text style={styles.infoValue}>
+                  {trip.availableSeats} · ${trip.pricePerSeat.toLocaleString()}
+                </Text>
+              </View>
+            ) : null}
+            {trip.availableKg > 0 ? (
+              <View style={styles.infoItem}>
+                <View style={styles.infoLabelRow}>
+                  <Icon name="package" size={14} color={theme.colors.icon.muted} />
+                  <Text style={styles.infoLabel}>Carga</Text>
+                </View>
+                <Text style={styles.infoValue}>
+                  {trip.availableKg} kg · ${trip.pricePerKg}/kg
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {trip.notes ? (
+            <View style={styles.noteRow}>
+              <Icon name="message-circle" size={14} color={theme.colors.icon.secondary} />
+              <Text style={styles.notes} numberOfLines={1}>
+                {trip.notes}
+              </Text>
+            </View>
+          ) : null}
+        </Card>
+      </TouchableOpacity>
+    </Reveal>
   )
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: Colors.white,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 3,
+    marginBottom: theme.spacing.md,
   },
-  header:     { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  surface: {
+    gap: theme.spacing.lg,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   avatar: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: Colors.navy, alignItems: 'center', justifyContent: 'center', marginRight: 10,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: theme.colors.background.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: theme.spacing.md,
   },
-  avatarText:  { color: Colors.white, fontWeight: '700', fontSize: 15 },
-  driverInfo:  { flex: 1 },
-  driverRow:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  driverName:  { fontSize: 15, fontWeight: '700', color: Colors.dark },
+  avatarText: {
+    ...theme.textStyles.label,
+    color: theme.colors.text.inverse,
+  },
+  driverInfo: {
+    flex: 1,
+  },
+  driverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  driverName: {
+    ...theme.textStyles.body,
+    color: theme.colors.text.primary,
+  },
   verifiedBadge: {
-    backgroundColor: Colors.navy, borderRadius: 10,
-    paddingHorizontal: 5, paddingVertical: 1,
+    width: 20,
+    height: 20,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.background.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  verifiedText: { color: Colors.white, fontSize: 9, fontWeight: '700' },
-  ratingRow:   { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  stars:       { color: Colors.amber, fontSize: 11 },
-  ratingCount: { fontSize: 11, color: Colors.gray },
-
-  route:      { marginBottom: 12 },
-  routePoint: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dot:        { width: 10, height: 10, borderRadius: 5 },
-  city:       { fontSize: 15, fontWeight: '600', color: Colors.dark },
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  ratingCount: {
+    ...theme.textStyles.caption,
+    color: theme.colors.text.secondary,
+  },
+  route: {
+    gap: theme.spacing.sm,
+  },
+  routePoint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  dot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  originDot: {
+    backgroundColor: theme.colors.background.brand,
+  },
+  destinationDot: {
+    backgroundColor: theme.colors.action.accent,
+  },
+  city: {
+    ...theme.textStyles.titleSmall,
+    color: theme.colors.text.primary,
+  },
+  routeLineWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingLeft: 4,
+  },
   routeLine: {
-    width: 2, height: 14, backgroundColor: Colors.grayMid,
-    marginLeft: 4, marginVertical: 3,
+    width: 2,
+    height: 18,
+    backgroundColor: theme.colors.border.default,
+    marginVertical: 2,
   },
-
-  info:       { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 8 },
-  infoItem:   {},
-  infoLabel:  { fontSize: 11, color: Colors.gray, marginBottom: 2 },
-  infoValue:  { fontSize: 13, fontWeight: '600', color: Colors.dark },
-
-  notes:      { fontSize: 12, color: Colors.gray, fontStyle: 'italic' },
+  info: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.md,
+  },
+  infoItem: {
+    minWidth: '45%',
+    gap: 4,
+  },
+  infoLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  infoLabel: {
+    ...theme.textStyles.caption,
+    color: theme.colors.text.secondary,
+  },
+  infoValue: {
+    ...theme.textStyles.label,
+    color: theme.colors.text.primary,
+  },
+  noteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  notes: {
+    ...theme.textStyles.caption,
+    color: theme.colors.text.secondary,
+    flex: 1,
+  },
 })

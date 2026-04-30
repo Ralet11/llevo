@@ -12,15 +12,16 @@ export class AppError extends Error {
 
 export function errorHandler(
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
   if (err instanceof AppError) {
+    console.error(`[request-error] ${req.method} ${req.originalUrl} -> ${err.statusCode} ${err.message}`)
     res.status(err.statusCode).json({ error: err.message })
     return
   }
 
-  console.error(err)
+  console.error(`[request-error] ${req.method} ${req.originalUrl} -> 500`, err)
   res.status(500).json({ error: 'Error interno del servidor' })
 }

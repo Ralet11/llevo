@@ -1,5 +1,15 @@
-import { TouchableOpacity, Text, ActivityIndicator, StyleSheet, ViewStyle } from 'react-native'
-import { Colors } from '../../constants/colors'
+import type { ComponentProps } from 'react'
+import {
+  Pressable,
+  Text,
+  ActivityIndicator,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native'
+import { theme } from '../../theme'
+import { Icon } from './Icon'
 
 type Variant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger'
 
@@ -9,57 +19,124 @@ type Props = {
   variant?: Variant
   loading?: boolean
   disabled?: boolean
-  style?: ViewStyle
+  style?: StyleProp<ViewStyle>
   fullWidth?: boolean
+  leftIcon?: ComponentProps<typeof Icon>['name']
+  rightIcon?: ComponentProps<typeof Icon>['name']
+  accessibilityLabel?: string
+  accessibilityHint?: string
 }
 
 export function Button({
-  label, onPress, variant = 'primary',
-  loading = false, disabled = false, style, fullWidth = true,
+  label,
+  onPress,
+  variant = 'primary',
+  loading = false,
+  disabled = false,
+  style,
+  fullWidth = true,
+  leftIcon,
+  rightIcon,
+  accessibilityLabel,
+  accessibilityHint,
 }: Props) {
+  const iconColor =
+    variant === 'primary'
+      ? theme.colors.action.accentText
+      : variant === 'secondary' || variant === 'danger'
+        ? theme.colors.action.primaryText
+        : theme.colors.text.brand
+
   return (
-    <TouchableOpacity
+    <Pressable
       onPress={onPress}
       disabled={disabled || loading}
-      style={[
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
+      style={({ pressed }) => [
         styles.base,
         styles[variant],
         fullWidth && styles.fullWidth,
         (disabled || loading) && styles.disabled,
+        pressed && !(disabled || loading) && styles.pressed,
         style,
       ]}
-      activeOpacity={0.8}
     >
-      {loading
-        ? <ActivityIndicator color={variant === 'outline' || variant === 'ghost' ? Colors.navy : Colors.white} />
-        : <Text style={[styles.label, styles[`label_${variant}`]]}>{label}</Text>
-      }
-    </TouchableOpacity>
+      {loading ? (
+        <ActivityIndicator
+          color={
+            variant === 'outline' || variant === 'ghost'
+              ? theme.colors.text.brand
+              : theme.colors.action.primaryText
+          }
+        />
+      ) : (
+        <View style={styles.content}>
+          {leftIcon ? <Icon name={leftIcon} size={18} color={iconColor} /> : null}
+          <Text style={[styles.label, styles[`label_${variant}`]]}>{label}</Text>
+          {rightIcon ? <Icon name={rightIcon} size={18} color={iconColor} /> : null}
+        </View>
+      )}
+    </Pressable>
   )
 }
 
 const styles = StyleSheet.create({
   base: {
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    minHeight: 54,
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.xl,
+    borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 50,
   },
   fullWidth: { width: '100%' },
-  disabled: { opacity: 0.5 },
+  disabled: { opacity: 0.55 },
+  pressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.985 }],
+  },
 
-  primary:   { backgroundColor: Colors.amber },
-  secondary: { backgroundColor: Colors.navy },
-  outline:   { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.navy },
-  ghost:     { backgroundColor: 'transparent' },
-  danger:    { backgroundColor: Colors.red },
+  primary: {
+    backgroundColor: theme.colors.action.accent,
+    borderWidth: 1,
+    borderColor: theme.colors.action.accent,
+    ...theme.shadows.sm,
+  },
+  secondary: {
+    backgroundColor: theme.colors.action.primary,
+    borderWidth: 1,
+    borderColor: theme.colors.action.primary,
+    ...theme.shadows.sm,
+  },
+  outline: {
+    backgroundColor: theme.colors.background.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border.strong,
+  },
+  ghost: {
+    backgroundColor: 'transparent',
+  },
+  danger: {
+    backgroundColor: theme.colors.action.danger,
+    borderWidth: 1,
+    borderColor: theme.colors.action.danger,
+  },
 
-  label:          { fontSize: 15, fontWeight: '700' },
-  label_primary:  { color: Colors.navy },
-  label_secondary:{ color: Colors.white },
-  label_outline:  { color: Colors.navy },
-  label_ghost:    { color: Colors.navyLight },
-  label_danger:   { color: Colors.white },
+  content: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  label: {
+    ...theme.textStyles.label,
+  },
+  label_primary: { color: theme.colors.action.accentText },
+  label_secondary: { color: theme.colors.action.primaryText },
+  label_outline: { color: theme.colors.text.brand },
+  label_ghost: { color: theme.colors.text.brand },
+  label_danger: { color: theme.colors.action.dangerText },
 })
