@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+:root {
+  --color-navy: #1E3A5F;
+  --color-amber: #F59E0B;
+}

@@ -1,0 +1,183 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  phone         String?  @unique
+  passwordHash  String
+  name          String
+  avatarUrl     String?
+  dni           String?  @unique
+  isVerified    Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  rating        Float    @default(0)
+  ratingCount   Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tripsAsDriver     Trip[]           @relation("DriverTrips")
+  passengerRequests TripRequest[]
+  packageRequests   PackageRequest[]
+  reviewsGiven      Review[]         @relation("ReviewsGiven")
+  reviewsReceived   Review[]         @relation("ReviewsReceived")
+  payments          Payment[]
+}
+
+// ─────────────────────────────────────────────
+// TRIP
+// ─────────────────────────────────────────────
+
+model Trip {
+  id                 String     @id @default(cuid())
+  driverId           String
+  driver             User       @relation("DriverTrips", fields: [driverId], references: [id])
+
+  originCity         String
+  destinationCity    String
+  originAddress      String?
+  destinationAddress String?
+
+  departureDate      DateTime
+  estimatedArrival   DateTime?
+
+  availableSeats     Int        @default(0)
+  pricePerSeat       Float?
+
+  availableKg        Float      @default(0)
+  pricePerKg         Float?
+
+  status             TripStatus @default(OPEN)
+  notes              String?
+
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  passengerRequests  TripRequest[]
+  packageRequests    PackageRequest[]
+  payments           Payment[]
+}
+
+enum TripStatus {
+  OPEN
+  FULL
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────
+// TRIP REQUEST (pasajeros)
+// ─────────────────────────────────────────────
+
+model TripRequest {
+  id          String        @id @default(cuid())
+  tripId      String
+  trip        Trip          @relation(fields: [tripId], references: [id])
+  passengerId String
+  passenger   User          @relation(fields: [passengerId], references: [id])
+
+  seats       Int           @default(1)
+  status      RequestStatus @default(PENDING)
+  message     String?
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  payment     Payment?
+}
+
+// ─────────────────────────────────────────────
+// PACKAGE REQUEST (encomiendas)
+// ─────────────────────────────────────────────
+
+model PackageRequest {
+  id              String        @id @default(cuid())
+  tripId          String
+  trip            Trip          @relation(fields: [tripId], references: [id])
+  senderId        String
+  sender          User          @relation(fields: [senderId], references: [id])
+
+  description     String
+  weightKg        Float
+  deliveryAddress String?
+  status          RequestStatus @default(PENDING)
+  message         String?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  payment         Payment?
+}
+
+enum RequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────
+// REVIEW
+// ─────────────────────────────────────────────
+
+model Review {
+  id        String   @id @default(cuid())
+  fromId    String
+  from      User     @relation("ReviewsGiven", fields: [fromId], references: [id])
+  toId      String
+  to        User     @relation("ReviewsReceived", fields: [toId], references: [id])
+
+  rating    Int      // 1 a 5
+  comment   String?
+
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────
+// PAYMENT (escrow)
+// ─────────────────────────────────────────────
+
+model Payment {
+  id               String        @id @default(cuid())
+  amount           Float
+  platformFee      Float
+  netAmount        Float
+  currency         String        @default("ARS")
+  status           PaymentStatus @default(PENDING)
+
+  tripId           String
+  trip             Trip          @relation(fields: [tripId], references: [id])
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
+
+  tripRequestId    String?       @unique
+  tripRequest      TripRequest?  @relation(fields: [tripRequestId], references: [id])
+
+  packageRequestId String?       @unique
+  packageRequest   PackageRequest? @relation(fields: [packageRequestId], references: [id])
+
+  externalId       String?       // ID del procesador (Mercado Pago, etc.)
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+enum PaymentStatus {
+  PENDING
+  IN_ESCROW
+  RELEASED
+  REFUNDED
+  FAILED
+}
