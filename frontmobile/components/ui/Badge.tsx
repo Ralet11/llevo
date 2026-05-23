@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet } from 'react-native'
 import { Colors } from '../../constants/colors'
+import { Theme } from '../../constants/theme'
 
 type Variant = 'success' | 'warning' | 'error' | 'info' | 'default'
 
@@ -46,7 +47,7 @@ const styles = StyleSheet.create({
   info:    { backgroundColor: Colors.blueLight },
   default: { backgroundColor: Colors.grayLight },
 
-  text:         { fontSize: 11, fontWeight: '700' },
+  text:         { fontSize: 11, fontFamily: Theme.fonts.bold },
   text_success: { color: Colors.green },
   text_warning: { color: '#92400E' },
   text_error:   { color: Colors.red },

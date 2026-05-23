@@ -19,6 +19,7 @@ export default function BuscarScreen() {
     const d = t.destinationCity.toLowerCase().includes(dest.toLowerCase())
     return (!origin || o) && (!dest || d)
   })
+  const visibleTrips = searched ? filtered : MOCK_TRIPS
 
   return (
     <View style={styles.container}>
@@ -79,7 +80,7 @@ export default function BuscarScreen() {
       {/* Results */}
       <ScrollView style={styles.results} showsVerticalScrollIndicator={false}>
         <View style={styles.resultsMeta}>
-          <Text style={styles.resultsCount}>{filtered.length} viajes disponibles</Text>
+          <Text style={styles.resultsCount}>{visibleTrips.length} viajes disponibles</Text>
           {mode === 'package' && (
             <TouchableOpacity>
               <Text style={styles.alertLink}>+ Crear alerta para esta ruta</Text>
@@ -87,7 +88,7 @@ export default function BuscarScreen() {
           )}
         </View>
 
-        {filtered.length === 0 ? (
+        {visibleTrips.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyIcon}>🔍</Text>
             <Text style={styles.emptyTitle}>Sin resultados</Text>
@@ -97,7 +98,7 @@ export default function BuscarScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          filtered.map(trip => (
+          visibleTrips.map(trip => (
             <TripCard
               key={trip.id}
               trip={trip}

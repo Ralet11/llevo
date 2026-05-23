@@ -5,20 +5,35 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "llevo",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
     "splash": {
       "resizeMode": "contain",
-      "backgroundColor": "#1E3A5F"
+      "backgroundColor": "#151515"
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.llevo.app"
+      "bundleIdentifier": "com.llevo.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#1E3A5F"
+        "backgroundColor": "#151515"
       },
-      "package": "com.llevo.app"
+      "statusBar": {
+        "backgroundColor": "#151515",
+        "barStyle": "light-content",
+        "translucent": true
+      },
+      "navigationBar": {
+        "backgroundColor": "#151515"
+      },
+      "package": "com.llevo.app",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -26,7 +41,13 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

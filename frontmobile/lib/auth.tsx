@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import * as SecureStore from 'expo-secure-store'
 
-type User = {
+export type User = {
   id: string
   name: string
   email: string
   phone?: string
+  city?: string
   rating: number
   ratingCount: number
   isVerified: boolean
@@ -17,6 +18,7 @@ type AuthContextType = {
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
   register: (data: RegisterData) => Promise<void>
+  updateUser: (data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -38,6 +40,7 @@ const MOCK_USER: User = {
   name: 'Ramiro Alet',
   email: 'ramiro.alet@gmail.com',
   phone: '11-1234-5678',
+  city: 'Buenos Aires',
   rating: 4.7,
   ratingCount: 8,
   isVerified: true,
@@ -87,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       name: data.name,
       email: data.email,
       phone: data.phone,
+      city: 'Buenos Aires',
       rating: 0,
       ratingCount: 0,
       isVerified: false,
@@ -98,6 +102,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(newUser)
   }
 
+  async function updateUser(data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) {
+    if (!user) return
+    const nextUser = { ...user, ...data }
+    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser))
+    setUser(nextUser)
+  }
+
   async function logout() {
     await SecureStore.deleteItemAsync(TOKEN_KEY)
     await SecureStore.deleteItemAsync(USER_KEY)
@@ -106,7 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, register, updateUser, logout }}>
       {children}
     </AuthContext.Provider>
   )

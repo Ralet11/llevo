@@ -1,5 +1,6 @@
 import { View, Text, TextInput, StyleSheet, TextInputProps } from 'react-native'
 import { Colors } from '../../constants/colors'
+import { Theme } from '../../constants/theme'
 
 type Props = TextInputProps & {
   label?: string
@@ -12,7 +13,7 @@ export function Input({ label, error, style, ...props }: Props) {
       {label && <Text style={styles.label}>{label}</Text>}
       <TextInput
         style={[styles.input, error && styles.inputError, style]}
-        placeholderTextColor={Colors.gray}
+        placeholderTextColor={Theme.colors.textSubtle}
         {...props}
       />
       {error && <Text style={styles.error}>{error}</Text>}
@@ -22,17 +23,18 @@ export function Input({ label, error, style, ...props }: Props) {
 
 const styles = StyleSheet.create({
   wrapper:    { marginBottom: 16 },
-  label:      { fontSize: 13, fontWeight: '600', color: Colors.dark, marginBottom: 6 },
+  label:      { fontSize: 12, fontFamily: Theme.fonts.semiBold, color: Colors.textMuted, marginBottom: 6 },
   input: {
-    backgroundColor: Colors.grayLight,
-    borderRadius: 10,
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Theme.radius.md,
     paddingHorizontal: 14,
     paddingVertical: 13,
     fontSize: 15,
-    color: Colors.dark,
+    fontFamily: Theme.fonts.medium,
+    color: Colors.text,
     borderWidth: 1,
-    borderColor: Colors.grayMid,
+    borderColor: Colors.border,
   },
   inputError: { borderColor: Colors.red },
-  error:      { fontSize: 12, color: Colors.red, marginTop: 4 },
+  error:      { fontSize: 12, fontFamily: Theme.fonts.medium, color: Colors.red, marginTop: 4 },
 })

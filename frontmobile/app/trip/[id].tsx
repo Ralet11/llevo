@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert } from 'react-native'
+import { View, Text, StyleSheet, ScrollView, Modal, Alert } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
 import { Colors } from '../../constants/colors'
 import { Button } from '../../components/ui/Button'

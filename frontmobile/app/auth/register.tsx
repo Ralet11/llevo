@@ -1,103 +1,196 @@
-import { useState } from 'react'
-import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView } from 'react-native'
+import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
-import { Colors } from '../../constants/colors'
+import { useState } from 'react'
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
+import { IconButton } from '../../components/ui/IconButton'
 import { Input } from '../../components/ui/Input'
+import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 
 export default function RegisterScreen() {
   const { register } = useAuth()
-  const [name,     setName]     = useState('')
-  const [email,    setEmail]    = useState('')
-  const [phone,    setPhone]    = useState('')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   async function handleRegister() {
-    if (!name || !email || !phone || !password) { setError('Completá todos los campos'); return }
-    if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return }
-    setError(''); setLoading(true)
+    if (!name || !email || !phone || !password) {
+      setError('Completa todos los campos')
+      return
+    }
+
+    if (password.length < 6) {
+      setError('La contrasena debe tener al menos 6 caracteres')
+      return
+    }
+
+    setError('')
+    setLoading(true)
     try {
       await register({ name, email, phone, password })
     } catch {
-      setError('Ocurrió un error. Intentá de nuevo.')
+      setError('Ocurrio un error. Intenta de nuevo.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <View style={styles.container}>
+    <ScreenSafeArea style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.logo}>LLEVO</Text>
-        <Text style={styles.subtitle}>Creá tu cuenta gratis</Text>
+        <IconButton name="chevron-back" onPress={() => router.replace('/onboarding')} />
+        <Text style={styles.headerTitle}>Crear cuenta</Text>
+        <View style={styles.headerSpacer} />
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.form}>
-        <ScrollView showsVerticalScrollIndicator={false}>
-          <Input label="Nombre completo" value={name} onChangeText={setName} placeholder="Juan Pérez" />
-          <Input
-            label="Email"
-            value={email}
-            onChangeText={setEmail}
-            placeholder="tu@email.com"
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-          <Input
-            label="Teléfono"
-            value={phone}
-            onChangeText={setPhone}
-            placeholder="11-1234-5678"
-            keyboardType="phone-pad"
-          />
-          <Input
-            label="Contraseña"
-            value={password}
-            onChangeText={setPassword}
-            placeholder="Mínimo 6 caracteres"
-            secureTextEntry
-          />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboard}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={styles.badge}>
+            <Ionicons name="shield-checkmark" size={18} color={Theme.colors.black} />
+            <Text style={styles.badgeText}>Perfil verificado, mejores ofertas</Text>
+          </View>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <Text style={styles.terms}>
-            Al registrarte aceptás los{' '}
-            <Text style={styles.link}>Términos y condiciones</Text>
-            {' '}y la{' '}
-            <Text style={styles.link}>Política de privacidad</Text>.
+          <Text style={styles.title}>Un perfil claro genera mas confianza.</Text>
+          <Text style={styles.subtitle}>
+            Crea tu cuenta para pedir viajes, enviar paquetes o publicar disponibilidad.
           </Text>
 
-          <Button label="Crear cuenta" onPress={handleRegister} loading={loading} style={{ marginTop: 8 }} />
+          <View style={styles.formCard}>
+            <Input label="Nombre completo" value={name} onChangeText={setName} placeholder="Juan Perez" />
+            <Input
+              label="Correo electronico"
+              value={email}
+              onChangeText={setEmail}
+              placeholder="tu@email.com"
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <Input
+              label="Telefono"
+              value={phone}
+              onChangeText={setPhone}
+              placeholder="11-1234-5678"
+              keyboardType="phone-pad"
+            />
+            <Input
+              label="Contrasena"
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Minimo 6 caracteres"
+              secureTextEntry
+            />
 
-          <TouchableOpacity style={styles.loginLink} onPress={() => router.replace('/auth/login')}>
-            <Text style={styles.loginText}>¿Ya tenés cuenta? <Text style={styles.link}>Ingresá</Text></Text>
-          </TouchableOpacity>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+
+            <Text style={styles.terms}>
+              Al registrarte aceptas los Terminos y condiciones y la Politica de privacidad.
+            </Text>
+
+            <Button label="Crear cuenta" onPress={handleRegister} loading={loading} />
+
+            <TouchableOpacity style={styles.loginLink} onPress={() => router.replace('/auth/login')}>
+              <Text style={styles.loginText}>Ya tenes cuenta? Ingresa</Text>
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </View>
+    </ScreenSafeArea>
   )
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.navy },
-  header: {
-    paddingTop: 80, paddingHorizontal: 28, paddingBottom: 32,
-    alignItems: 'center',
-  },
-  logo:     { fontSize: 40, fontWeight: '800', color: Colors.white, letterSpacing: -1 },
-  subtitle: { fontSize: 16, color: Colors.blueM, marginTop: 6 },
-  form: {
+  container: {
     flex: 1,
-    backgroundColor: Colors.white,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 24, paddingTop: 32,
+    backgroundColor: Theme.colors.background,
   },
-  error:     { color: Colors.red, fontSize: 13, marginBottom: 12, textAlign: 'center' },
-  terms:     { fontSize: 12, color: Colors.gray, textAlign: 'center', marginBottom: 16, lineHeight: 18 },
-  link:      { color: Colors.navyLight, fontWeight: '600' },
-  loginLink: { alignItems: 'center', paddingVertical: 14 },
-  loginText: { color: Colors.gray, fontSize: 14 },
+  header: {
+    height: 58,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerTitle: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 15,
+  },
+  headerSpacer: {
+    width: 46,
+  },
+  keyboard: {
+    flex: 1,
+  },
+  content: {
+    paddingHorizontal: 22,
+    paddingBottom: 28,
+  },
+  badge: {
+    alignSelf: 'flex-start',
+    minHeight: 36,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Theme.colors.lime,
+    marginTop: 12,
+    marginBottom: 24,
+  },
+  badgeText: {
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 12,
+  },
+  title: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.display,
+    fontSize: 31,
+    lineHeight: 34,
+    letterSpacing: -0.9,
+  },
+  subtitle: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  formCard: {
+    borderRadius: 22,
+    padding: 16,
+    backgroundColor: Theme.colors.surface,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  error: {
+    color: Theme.colors.danger,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  terms: {
+    color: Theme.colors.textSubtle,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'center',
+    marginBottom: 14,
+  },
+  loginLink: {
+    alignItems: 'center',
+    paddingTop: 14,
+  },
+  loginText: {
+    color: Theme.colors.lime,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 13,
+  },
 })
