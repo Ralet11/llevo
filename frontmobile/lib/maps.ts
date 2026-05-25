@@ -88,6 +88,7 @@ export async function computeRoutePreview(payload: {
   origin: RouteWaypointPayload
   destination: RouteWaypointPayload
   travelMode?: 'DRIVE' | 'TWO_WHEELER'
+  sessionToken?: string
 }) {
   const response = await fetch(`${BASE_URL}/maps/routes/preview`, {
     method: 'POST',

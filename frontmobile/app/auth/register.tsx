@@ -33,8 +33,8 @@ export default function RegisterScreen() {
     setLoading(true)
     try {
       await register({ name, email, phone, password })
-    } catch {
-      setError('Ocurrio un error. Intenta de nuevo.')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Ocurrio un error. Intenta de nuevo.')
     } finally {
       setLoading(false)
     }

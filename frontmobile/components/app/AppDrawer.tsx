@@ -30,6 +30,7 @@ type Props = {
   visible: boolean
   onClose: () => void
   onNavigate: (href: Href) => void
+  onDriverMode: () => void
   onLogout: () => void
 }
 
@@ -66,7 +67,7 @@ function MenuRow({ item, active, onPress }: { item: DrawerItem; active: boolean;
   )
 }
 
-export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onLogout }: Props) {
+export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDriverMode, onLogout }: Props) {
   const [shouldRender, setShouldRender] = useState(visible)
   const translateX = useRef(new Animated.Value(-DRAWER_WIDTH)).current
   const opacity = useRef(new Animated.Value(0)).current
@@ -153,7 +154,7 @@ export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onLo
           </View>
 
           <View style={styles.footer}>
-            <TouchableOpacity activeOpacity={0.86} style={styles.driverMode}>
+            <TouchableOpacity activeOpacity={0.86} style={styles.driverMode} onPress={onDriverMode}>
               <Text style={styles.driverModeText}>Modo conductor</Text>
             </TouchableOpacity>
 

@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import authRoutes from './auth.routes'
+import mapsRoutes from './maps.routes'
 import userRoutes from './users.routes'
 import tripRoutes from './trips.routes'
 
@@ -10,6 +11,7 @@ router.get('/', (_req, res) => {
 })
 
 router.use('/auth', authRoutes)
+router.use('/maps', mapsRoutes)
 router.use('/users', userRoutes)
 router.use('/trips', tripRoutes)
 

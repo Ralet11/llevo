@@ -12,20 +12,26 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  if (token) headers.Authorization = `Bearer ${token}`
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Error desconocido' }))
-    throw new Error(error.error || 'Error en la petición')
+  let response: Response
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    throw new Error(`No se pudo conectar con ${BASE_URL}`)
   }
 
-  return res.json()
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Error desconocido' }))
+    throw new Error(error.error || 'Error en la peticion')
+  }
+
+  return response.json()
 }
 
 export const api = {
