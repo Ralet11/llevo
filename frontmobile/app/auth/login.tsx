@@ -9,28 +9,72 @@ import { Input } from '../../components/ui/Input'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 
+type LoginMethod = 'phone' | 'email'
+
 export default function LoginScreen() {
-  const { login } = useAuth()
+  const { login, sendPhoneCode, loginWithPhone } = useAuth()
+  const [method, setMethod] = useState<LoginMethod>('phone')
+  const [phone, setPhone] = useState('')
+  const [code, setCode] = useState('')
+  const [codeSent, setCodeSent] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
 
-  async function handleLogin() {
-    if (!email || !password) {
-      setError('Completa email y contrasena')
+  async function handlePhoneCodeRequest() {
+    if (!phone.trim()) {
+      setError('Completa tu telefono')
       return
     }
 
     setError('')
+    setInfo('')
     setLoading(true)
     try {
-      await login(email, password)
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'No pude iniciar sesion')
+      await sendPhoneCode(phone, 'login')
+      setCodeSent(true)
+      setInfo('Te enviamos un codigo por SMS.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'No pude enviar el codigo')
     } finally {
       setLoading(false)
     }
+  }
+
+  async function handleLogin() {
+    setError('')
+    setInfo('')
+    setLoading(true)
+
+    try {
+      if (method === 'phone') {
+        if (!phone.trim()) throw new Error('Completa tu telefono')
+        if (!codeSent) {
+          await sendPhoneCode(phone, 'login')
+          setCodeSent(true)
+          setInfo('Te enviamos un codigo por SMS.')
+          return
+        }
+        if (!code.trim()) throw new Error('Ingresa el codigo recibido')
+        await loginWithPhone(phone, code)
+        return
+      }
+
+      if (!email || !password) throw new Error('Completa email y contrasena')
+      await login(email, password)
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : 'No pude iniciar sesion')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function switchMethod(nextMethod: LoginMethod) {
+    setMethod(nextMethod)
+    setError('')
+    setInfo('')
   }
 
   return (
@@ -53,36 +97,14 @@ export default function LoginScreen() {
             <View style={styles.heroGrid} />
 
             <View style={styles.tripBadge}>
-              <Ionicons name="navigate-circle" size={16} color={Theme.colors.black} />
-              <Text style={styles.tripBadgeText}>Viajes activos</Text>
+              <Ionicons name="shield-checkmark" size={16} color={Theme.colors.black} />
+              <Text style={styles.tripBadgeText}>Ingreso seguro</Text>
             </View>
 
             <View style={styles.routeCard}>
-              <View style={styles.routeStop}>
-                <View style={styles.routeStopIcon}>
-                  <Ionicons name="location" size={14} color={Theme.colors.black} />
-                </View>
-                <View style={styles.routeStopCopy}>
-                  <Text style={styles.routeStopLabel}>Salida</Text>
-                  <Text style={styles.routeStopValue}>Caballito</Text>
-                </View>
-              </View>
-
-              <View style={styles.routeConnector}>
-                <View style={styles.routeConnectorDot} />
-                <View style={styles.routeConnectorLine} />
-                <View style={styles.routeConnectorDot} />
-              </View>
-
-              <View style={styles.routeStop}>
-                <View style={[styles.routeStopIcon, styles.routeStopIconAlt]}>
-                  <Ionicons name="flag" size={13} color={Theme.colors.black} />
-                </View>
-                <View style={styles.routeStopCopy}>
-                  <Text style={styles.routeStopLabel}>Destino</Text>
-                  <Text style={styles.routeStopValue}>Microcentro</Text>
-                </View>
-              </View>
+              <Text style={styles.routeStopLabel}>Acceso principal</Text>
+              <Text style={styles.routeStopValue}>Telefono con codigo</Text>
+              <Text style={styles.heroSmallCopy}>Twilio Verify habilita el ingreso sin contrasena.</Text>
             </View>
 
             <View style={styles.roadBand}>
@@ -91,58 +113,111 @@ export default function LoginScreen() {
               <View style={styles.roadLaneShort} />
             </View>
 
-            <View style={styles.carCardSecondary}>
-              <Ionicons name="car-sport" size={24} color={Theme.colors.black} />
-              <View style={styles.carWheels}>
-                <View style={styles.carWheel} />
-                <View style={styles.carWheel} />
-              </View>
-            </View>
-
             <View style={styles.carCardPrimary}>
               <View style={styles.carCardHeader}>
-                <Text style={styles.carCardTitle}>Auto disponible</Text>
-                <Ionicons name="arrow-forward" size={14} color={Theme.colors.black} />
+                <Text style={styles.carCardTitle}>Tu cuenta</Text>
+                <Ionicons name="phone-portrait" size={14} color={Theme.colors.black} />
               </View>
-              <Ionicons name="car-sport" size={38} color={Theme.colors.black} />
+              <Ionicons name="chatbubble-ellipses" size={38} color={Theme.colors.black} />
               <View style={styles.carMetaRow}>
-                <Text style={styles.carMetaPill}>4 asientos</Text>
-                <Text style={styles.carMetaPill}>Llega en 6 min</Text>
+                <Text style={styles.carMetaPill}>SMS OTP</Text>
+                <Text style={styles.carMetaPill}>Email legado</Text>
               </View>
             </View>
           </View>
 
           <View style={styles.copy}>
-            <Text style={styles.title}>Ingresa y pedi tu proximo movimiento.</Text>
-            <Text style={styles.subtitle}>Mapa, viajes, entregas y perfil bajo una misma experiencia segura.</Text>
+            <Text style={styles.title}>Ingresa o creá tu cuenta en segundos.</Text>
+            <Text style={styles.subtitle}>Ingresá tu telefono, te mandamos un codigo y listo. Si no tenés cuenta la creamos automáticamente.</Text>
           </View>
 
           <View style={styles.formCard}>
-            <Input
-              label="Correo electronico"
-              value={email}
-              onChangeText={setEmail}
-              placeholder="tu@email.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <Input
-              label="Contrasena"
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Minimo 6 caracteres"
-              secureTextEntry
-            />
+            <View style={styles.methodRow}>
+              <TouchableOpacity
+                style={[styles.methodChip, method === 'phone' && styles.methodChipActive]}
+                activeOpacity={0.85}
+                onPress={() => switchMethod('phone')}
+              >
+                <Text style={[styles.methodChipText, method === 'phone' && styles.methodChipTextActive]}>
+                  Telefono
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.methodChip, method === 'email' && styles.methodChipActive]}
+                activeOpacity={0.85}
+                onPress={() => switchMethod('email')}
+              >
+                <Text style={[styles.methodChipText, method === 'email' && styles.methodChipTextActive]}>
+                  Email
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {method === 'phone' ? (
+              <>
+                <Input
+                  label="Telefono"
+                  value={phone}
+                  onChangeText={setPhone}
+                  placeholder="+5491112345678"
+                  keyboardType="phone-pad"
+                  autoCapitalize="none"
+                />
+                {codeSent ? (
+                  <Input
+                    label="Codigo SMS"
+                    value={code}
+                    onChangeText={setCode}
+                    placeholder="123456"
+                    keyboardType="number-pad"
+                    autoCapitalize="none"
+                  />
+                ) : null}
+
+                {info ? <Text style={styles.info}>{info}</Text> : null}
+
+                <Button
+                  label={codeSent ? 'Ingresar con codigo' : 'Enviar codigo'}
+                  onPress={() => void handleLogin()}
+                  loading={loading}
+                  style={styles.submit}
+                />
+
+                {codeSent ? (
+                  <TouchableOpacity style={styles.secondaryLink} onPress={() => void handlePhoneCodeRequest()}>
+                    <Text style={styles.secondaryText}>Reenviar codigo</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Input
+                  label="Correo electronico"
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="tu@email.com"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+                <Input
+                  label="Contrasena"
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Minimo 6 caracteres"
+                  secureTextEntry
+                />
+
+                <Button label="Ingresar" onPress={() => void handleLogin()} loading={loading} style={styles.submit} />
+              </>
+            )}
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
-            <Text style={styles.devHint}>Usa una cuenta registrada en tu backend local o crea una desde la pantalla de registro.</Text>
-
-            <Button label="Ingresar" onPress={handleLogin} loading={loading} style={styles.submit} />
-
-            <TouchableOpacity style={styles.registerLink} onPress={() => router.replace('/auth/register')}>
-              <Text style={styles.registerText}>No tenes cuenta? Crear una</Text>
-            </TouchableOpacity>
+            {method === 'email' && (
+              <TouchableOpacity style={styles.registerLink} onPress={() => router.replace('/auth/register')}>
+                <Text style={styles.registerText}>No tenes cuenta? Crear una</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -236,32 +311,13 @@ const styles = StyleSheet.create({
   routeCard: {
     position: 'absolute',
     left: 20,
-    top: 64,
-    width: 122,
-    padding: 12,
+    top: 66,
+    width: 146,
+    padding: 14,
     borderRadius: 22,
     backgroundColor: Theme.colors.white,
     borderWidth: 3,
     borderColor: Theme.colors.black,
-  },
-  routeStop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  routeStopIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
-  },
-  routeStopIconAlt: {
-    backgroundColor: Theme.colors.limeSoft,
-  },
-  routeStopCopy: {
-    flex: 1,
   },
   routeStopLabel: {
     color: 'rgba(5,5,5,0.55)',
@@ -273,26 +329,15 @@ const styles = StyleSheet.create({
   routeStopValue: {
     color: Theme.colors.black,
     fontFamily: Theme.fonts.bold,
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: 15,
+    marginTop: 4,
   },
-  routeConnector: {
-    marginLeft: 13,
-    marginVertical: 8,
-    width: 2,
-    alignItems: 'center',
-  },
-  routeConnectorDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Theme.colors.black,
-  },
-  routeConnectorLine: {
-    width: 2,
-    height: 18,
-    marginVertical: 3,
-    backgroundColor: 'rgba(5,5,5,0.28)',
+  heroSmallCopy: {
+    color: 'rgba(5,5,5,0.68)',
+    fontFamily: Theme.fonts.medium,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 8,
   },
   roadBand: {
     position: 'absolute',
@@ -319,20 +364,6 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: Theme.colors.lime,
-  },
-  carCardSecondary: {
-    position: 'absolute',
-    right: 90,
-    bottom: 52,
-    width: 88,
-    height: 68,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F2F5D6',
-    borderWidth: 3,
-    borderColor: Theme.colors.black,
-    transform: [{ rotate: '-9deg' }],
   },
   carCardPrimary: {
     position: 'absolute',
@@ -373,20 +404,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: Theme.colors.limeSoft,
   },
-  carWheels: {
-    position: 'absolute',
-    bottom: 9,
-    left: 18,
-    right: 18,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  carWheel: {
-    width: 11,
-    height: 11,
-    borderRadius: 6,
-    backgroundColor: Theme.colors.black,
-  },
   copy: {
     marginBottom: 18,
   },
@@ -411,22 +428,58 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Theme.colors.border,
   },
+  methodRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  methodChip: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  methodChipActive: {
+    backgroundColor: Theme.colors.lime,
+    borderColor: Theme.colors.lime,
+  },
+  methodChipText: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 13,
+  },
+  methodChipTextActive: {
+    color: Theme.colors.black,
+  },
+  info: {
+    color: Theme.colors.textSubtle,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
   error: {
     color: Theme.colors.danger,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
     textAlign: 'center',
-    marginBottom: 10,
-  },
-  devHint: {
-    color: Theme.colors.textSubtle,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    lineHeight: 16,
-    marginBottom: 12,
+    marginTop: 12,
   },
   submit: {
     marginTop: 2,
+  },
+  secondaryLink: {
+    alignItems: 'center',
+    paddingTop: 12,
+  },
+  secondaryText: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
   },
   registerLink: {
     alignItems: 'center',

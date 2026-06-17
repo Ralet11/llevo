@@ -10,31 +10,64 @@ import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 
 export default function RegisterScreen() {
-  const { register } = useAuth()
+  const { registerWithPhone, sendPhoneCode } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
-  const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
+  const [codeSent, setCodeSent] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
 
-  async function handleRegister() {
-    if (!name || !email || !phone || !password) {
-      setError('Completa todos los campos')
-      return
-    }
-
-    if (password.length < 6) {
-      setError('La contrasena debe tener al menos 6 caracteres')
+  async function handleSendCode() {
+    if (!name.trim() || !phone.trim()) {
+      setError('Completa nombre y telefono')
       return
     }
 
     setError('')
+    setInfo('')
     setLoading(true)
     try {
-      await register({ name, email, phone, password })
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Ocurrio un error. Intenta de nuevo.')
+      await sendPhoneCode(phone, 'register')
+      setCodeSent(true)
+      setInfo('Te enviamos un codigo para confirmar tu telefono.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'No pude enviar el codigo')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleRegister() {
+    if (!name.trim() || !phone.trim()) {
+      setError('Completa nombre y telefono')
+      return
+    }
+
+    if (!codeSent) {
+      await handleSendCode()
+      return
+    }
+
+    if (!code.trim()) {
+      setError('Ingresa el codigo recibido')
+      return
+    }
+
+    setError('')
+    setInfo('')
+    setLoading(true)
+    try {
+      await registerWithPhone({
+        name,
+        phone,
+        code,
+        email: email.trim() || undefined,
+      })
+    } catch (registerError) {
+      setError(registerError instanceof Error ? registerError.message : 'Ocurrio un error. Intenta de nuevo.')
     } finally {
       setLoading(false)
     }
@@ -51,47 +84,63 @@ export default function RegisterScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboard}>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <View style={styles.badge}>
-            <Ionicons name="shield-checkmark" size={18} color={Theme.colors.black} />
-            <Text style={styles.badgeText}>Perfil verificado, mejores ofertas</Text>
+            <Ionicons name="phone-portrait" size={18} color={Theme.colors.black} />
+            <Text style={styles.badgeText}>Alta con telefono verificado</Text>
           </View>
 
-          <Text style={styles.title}>Un perfil claro genera mas confianza.</Text>
+          <Text style={styles.title}>Tu numero pasa a ser la llave principal.</Text>
           <Text style={styles.subtitle}>
-            Crea tu cuenta para pedir viajes, enviar paquetes o publicar disponibilidad.
+            Creamos la cuenta con OTP por SMS. El email queda opcional para contacto y recuperos futuros.
           </Text>
 
           <View style={styles.formCard}>
             <Input label="Nombre completo" value={name} onChangeText={setName} placeholder="Juan Perez" />
             <Input
-              label="Correo electronico"
+              label="Telefono"
+              value={phone}
+              onChangeText={setPhone}
+              placeholder="+5491112345678"
+              keyboardType="phone-pad"
+              autoCapitalize="none"
+            />
+            <Input
+              label="Correo electronico (opcional)"
               value={email}
               onChangeText={setEmail}
               placeholder="tu@email.com"
               keyboardType="email-address"
               autoCapitalize="none"
             />
-            <Input
-              label="Telefono"
-              value={phone}
-              onChangeText={setPhone}
-              placeholder="11-1234-5678"
-              keyboardType="phone-pad"
-            />
-            <Input
-              label="Contrasena"
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Minimo 6 caracteres"
-              secureTextEntry
-            />
 
+            {codeSent ? (
+              <Input
+                label="Codigo SMS"
+                value={code}
+                onChangeText={setCode}
+                placeholder="123456"
+                keyboardType="number-pad"
+                autoCapitalize="none"
+              />
+            ) : null}
+
+            {info ? <Text style={styles.info}>{info}</Text> : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Text style={styles.terms}>
               Al registrarte aceptas los Terminos y condiciones y la Politica de privacidad.
             </Text>
 
-            <Button label="Crear cuenta" onPress={handleRegister} loading={loading} />
+            <Button
+              label={codeSent ? 'Crear cuenta con codigo' : 'Enviar codigo'}
+              onPress={() => void handleRegister()}
+              loading={loading}
+            />
+
+            {codeSent ? (
+              <TouchableOpacity style={styles.secondaryLink} onPress={() => void handleSendCode()}>
+                <Text style={styles.secondaryText}>Reenviar codigo</Text>
+              </TouchableOpacity>
+            ) : null}
 
             <TouchableOpacity style={styles.loginLink} onPress={() => router.replace('/auth/login')}>
               <Text style={styles.loginText}>Ya tenes cuenta? Ingresa</Text>
@@ -169,6 +218,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Theme.colors.border,
   },
+  info: {
+    color: Theme.colors.textSubtle,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
   error: {
     color: Theme.colors.danger,
     fontFamily: Theme.fonts.semiBold,
@@ -183,6 +239,15 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     textAlign: 'center',
     marginBottom: 14,
+  },
+  secondaryLink: {
+    alignItems: 'center',
+    paddingTop: 12,
+  },
+  secondaryText: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
   },
   loginLink: {
     alignItems: 'center',

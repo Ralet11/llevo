@@ -48,7 +48,7 @@
         {
           "locationWhenInUsePermission": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa."
         }
-      ]
+      ],
     ],
     "experiments": {
       "typedRoutes": true

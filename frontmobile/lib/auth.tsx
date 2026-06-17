@@ -1,16 +1,33 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import * as SecureStore from 'expo-secure-store'
-import { api } from './api'
+import { api, ApiError } from './api'
+
+export type DriverVerificationStatus =
+  | 'NOT_STARTED'
+  | 'PENDING'
+  | 'IN_PROGRESS'
+  | 'IN_REVIEW'
+  | 'APPROVED'
+  | 'DECLINED'
+  | 'RESUBMITTED'
+  | 'EXPIRED'
+  | 'ABANDONED'
+  | 'KYC_EXPIRED'
 
 export type User = {
   id: string
   name: string
-  email: string
-  phone?: string
+  email?: string | null
+  phone?: string | null
   city?: string
   rating: number
   ratingCount: number
   isVerified: boolean
+  phoneVerifiedAt?: string | null
+  driverVerificationStatus: DriverVerificationStatus
+  driverVerificationSessionId?: string | null
+  driverVerificationUrl?: string | null
+  driverVerifiedAt?: string | null
 }
 
 export type DriverMode = 'rider' | 'viajes' | 'entrega'
@@ -26,31 +43,66 @@ export type DriverProfile = {
   updatedAt: string
 }
 
-type AuthContextType = {
-  user: User | null
-  token: string | null
-  driverProfile: DriverProfile | null
-  isLoading: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (data: RegisterData) => Promise<void>
-  updateUser: (data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) => Promise<void>
-  saveDriverProfile: (data: DriverProfile) => Promise<void>
-  clearDriverProfile: () => Promise<void>
-  logout: () => Promise<void>
+type PhoneCodeIntent = 'login' | 'register'
+
+type PhoneRegisterData = {
+  name: string
+  phone: string
+  code: string
+  email?: string
 }
 
-type RegisterData = {
+type LegacyRegisterData = {
   name: string
   email: string
   phone: string
   password: string
 }
 
+type DriverVerificationSession = {
+  status: DriverVerificationStatus
+  sessionId?: string | null
+  verificationUrl?: string | null
+  alreadyVerified?: boolean
+}
+
+type DriverVerificationStatusResponse = {
+  status: DriverVerificationStatus
+  sessionId?: string | null
+  verificationUrl?: string | null
+  submittedAt?: string | null
+  checkedAt?: string | null
+  verifiedAt?: string | null
+  notes?: string | null
+  user: Partial<User> & {
+    id: string
+    name: string
+  }
+}
+
+type AuthContextType = {
+  user: User | null
+  token: string | null
+  driverProfile: DriverProfile | null
+  isLoading: boolean
+  login: (email: string, password: string) => Promise<void>
+  register: (data: LegacyRegisterData) => Promise<void>
+  sendPhoneCode: (phone: string, intent: PhoneCodeIntent) => Promise<void>
+  loginWithPhone: (phone: string, code: string) => Promise<void>
+  registerWithPhone: (data: PhoneRegisterData) => Promise<void>
+  refreshSession: () => Promise<User | null>
+  startDriverVerification: (callbackUrl: string) => Promise<DriverVerificationSession>
+  syncDriverVerification: (force?: boolean) => Promise<DriverVerificationStatusResponse | null>
+  updateUser: (data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) => Promise<void>
+  saveDriverProfile: (data: DriverProfile) => Promise<void>
+  clearDriverProfile: () => Promise<void>
+  logout: () => Promise<void>
+}
+
 type AuthResponse = {
   user: Partial<User> & {
     id: string
     name: string
-    email: string
   }
   token: string
 }
@@ -59,7 +111,6 @@ type MeResponse = {
   user: Partial<User> & {
     id: string
     name: string
-    email: string
   }
 }
 
@@ -72,16 +123,21 @@ function getDriverProfileKey(userId: string) {
   return `llevo_driver_profile_${userId}`
 }
 
-function normalizeUser(user: Partial<User> & { id: string; name: string; email: string }): User {
+function normalizeUser(user: Partial<User> & { id: string; name: string }): User {
   return {
     id: user.id,
     name: user.name,
-    email: user.email,
-    phone: user.phone,
+    email: user.email ?? null,
+    phone: user.phone ?? null,
     city: user.city,
     rating: typeof user.rating === 'number' ? user.rating : 0,
     ratingCount: typeof user.ratingCount === 'number' ? user.ratingCount : 0,
     isVerified: Boolean(user.isVerified),
+    phoneVerifiedAt: user.phoneVerifiedAt ?? null,
+    driverVerificationStatus: user.driverVerificationStatus ?? 'NOT_STARTED',
+    driverVerificationSessionId: user.driverVerificationSessionId ?? null,
+    driverVerificationUrl: user.driverVerificationUrl ?? null,
+    driverVerifiedAt: user.driverVerifiedAt ?? null,
   }
 }
 
@@ -108,11 +164,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadSession()
   }, [])
 
+  async function setPersistedUser(nextUser: User) {
+    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser))
+    setUser(nextUser)
+  }
+
   async function persistSession(nextToken: string, nextUser: User) {
     await SecureStore.setItemAsync(TOKEN_KEY, nextToken)
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser))
     setToken(nextToken)
-    setUser(nextUser)
+    await setPersistedUser(nextUser)
     setDriverProfile(await readDriverProfile(nextUser.id))
   }
 
@@ -126,6 +186,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('Error cargando perfil de conductor', error)
       return null
     }
+  }
+
+  async function refreshSession(currentToken = token): Promise<User | null> {
+    if (!currentToken) return null
+
+    const response = await api.get<MeResponse>('/auth/me', currentToken)
+    const nextUser = normalizeUser(response.user)
+    await setPersistedUser(nextUser)
+    return nextUser
   }
 
   async function loadSession() {
@@ -143,18 +212,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        const parsedUser = JSON.parse(storedUser) as User
+        const parsedUser = normalizeUser(JSON.parse(storedUser) as Partial<User> & { id: string; name: string })
         setToken(storedToken)
         setUser(parsedUser)
         setDriverProfile(await readDriverProfile(parsedUser.id))
 
         try {
-          const response = await api.get<MeResponse>('/auth/me', storedToken)
-          const nextUser = normalizeUser(response.user)
-          await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser))
-          setUser(nextUser)
+          await refreshSession(storedToken)
         } catch (refreshError) {
-          console.log('No pude refrescar la sesion con el backend', refreshError)
+          if (refreshError instanceof ApiError && refreshError.status === 401) {
+            await SecureStore.deleteItemAsync(TOKEN_KEY)
+            await SecureStore.deleteItemAsync(USER_KEY)
+            setToken(null)
+            setUser(null)
+            setDriverProfile(null)
+          } else {
+            console.log('No pude refrescar la sesion con el backend', refreshError)
+          }
         }
       }
     } catch (error) {
@@ -169,17 +243,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persistSession(response.token, normalizeUser(response.user))
   }
 
-  async function register(data: RegisterData) {
+  async function register(data: LegacyRegisterData) {
     const response = await api.post<AuthResponse>('/auth/register', data)
     const meResponse = await api.get<MeResponse>('/auth/me', response.token)
     await persistSession(response.token, normalizeUser(meResponse.user))
   }
 
+  async function sendPhoneCode(phone: string, intent: PhoneCodeIntent) {
+    await api.post('/auth/phone/send-code', { phone, intent })
+  }
+
+  async function loginWithPhone(phone: string, code: string) {
+    const response = await api.post<AuthResponse>('/auth/phone/login', { phone, code })
+    await persistSession(response.token, normalizeUser(response.user))
+  }
+
+  async function registerWithPhone(data: PhoneRegisterData) {
+    const response = await api.post<AuthResponse>('/auth/phone/register', data)
+    await persistSession(response.token, normalizeUser(response.user))
+  }
+
+  async function startDriverVerification(callbackUrl: string) {
+    if (!token) throw new Error('No hay sesion activa')
+    return api.post<DriverVerificationSession>('/drivers/verification/session', { callbackUrl }, token)
+  }
+
+  async function syncDriverVerification(force = false) {
+    if (!token) return null
+    const path = force ? '/drivers/verification/status?sync=1' : '/drivers/verification/status'
+    const response = await api.get<DriverVerificationStatusResponse>(path, token)
+    await setPersistedUser(normalizeUser(response.user))
+    return response
+  }
+
   async function updateUser(data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) {
     if (!user) return
     const nextUser = { ...user, ...data }
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser))
-    setUser(nextUser)
+    await setPersistedUser(nextUser)
   }
 
   async function saveDriverProfile(data: DriverProfile) {
@@ -212,6 +312,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         login,
         register,
+        sendPhoneCode,
+        loginWithPhone,
+        registerWithPhone,
+        refreshSession,
+        startDriverVerification,
+        syncDriverVerification,
         updateUser,
         saveDriverProfile,
         clearDriverProfile,

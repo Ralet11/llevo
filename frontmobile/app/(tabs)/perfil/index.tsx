@@ -40,7 +40,7 @@ export default function PerfilScreen() {
             <Text style={styles.name}>{user?.name}</Text>
             {user?.isVerified && <Badge status="ACCEPTED" label="Verificado" />}
           </View>
-          <Text style={styles.email}>{user?.email}</Text>
+          <Text style={styles.email}>{user?.email || user?.phone || 'Sin dato de contacto'}</Text>
         </View>
       </View>
 

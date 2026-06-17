@@ -3,6 +3,7 @@ dotenv.config()
 
 import app from './app'
 import prisma from './lib/prisma'
+import { checkTimeouts } from './services/shipmentQueue'
 
 const PORT = Number(process.env.PORT || 3001)
 
@@ -30,8 +31,19 @@ function validateDatabaseUrl() {
   }
 }
 
-async function start() {
+function validateEnv() {
   validateDatabaseUrl()
+
+  if (!process.env.JWT_SECRET) {
+    throw new Error('Falta JWT_SECRET en api/.env')
+  }
+  if (process.env.JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET debe tener al menos 32 caracteres')
+  }
+}
+
+async function start() {
+  validateEnv()
 
   try {
     await prisma.$connect()
@@ -47,6 +59,11 @@ async function start() {
     console.log(`🚀 LLEVO API corriendo en http://localhost:${PORT}`)
     console.log(`   Ambiente: ${process.env.NODE_ENV || 'development'}`)
   })
+
+  // Revisar timeouts de cola cada 5 minutos
+  setInterval(() => {
+    checkTimeouts().catch(err => console.error('[queue] Error en checkTimeouts:', err))
+  }, 5 * 60 * 1000)
 }
 
 void start()

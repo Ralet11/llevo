@@ -4,6 +4,7 @@ import router from './routes'
 import { errorHandler } from './middleware/errorHandler'
 
 const app = express()
+const DIDIT_WEBHOOK_PATH = '/api/v1/drivers/verification/webhook'
 
 // ── Middleware ─────────────────────────────────────────────
 app.use(cors({
@@ -11,7 +12,14 @@ app.use(cors({
   credentials: true,
 }))
 
-app.use(express.json())
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    const requestPath = req.url?.split('?')[0]
+    if (requestPath === DIDIT_WEBHOOK_PATH) {
+      ;(req as typeof req & { rawBody?: string }).rawBody = buf.toString('utf8')
+    }
+  },
+}))
 app.use(express.urlencoded({ extended: true }))
 
 // ── Routes ────────────────────────────────────────────────

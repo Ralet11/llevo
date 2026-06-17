@@ -13,16 +13,26 @@ datasource db {
 
 model User {
   id            String   @id @default(cuid())
-  email         String   @unique
+  email         String?  @unique
   phone         String?  @unique
-  passwordHash  String
+  passwordHash  String?
   name          String
   avatarUrl     String?
   dni           String?  @unique
   isVerified    Boolean  @default(false)
+  phoneVerifiedAt DateTime?
+  driverVerificationStatus DriverVerificationStatus @default(NOT_STARTED)
+  driverVerificationSessionId String? @unique
+  driverVerificationUrl String?
+  driverVerificationSubmittedAt DateTime?
+  driverVerificationCheckedAt DateTime?
+  driverVerificationNotes String?
+  driverVerificationDecision Json?
+  driverVerifiedAt DateTime?
   isActive      Boolean  @default(true)
   rating        Float    @default(0)
   ratingCount   Int      @default(0)
+  pushToken     String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -32,6 +42,22 @@ model User {
   reviewsGiven      Review[]         @relation("ReviewsGiven")
   reviewsReceived   Review[]         @relation("ReviewsReceived")
   payments          Payment[]
+  driverRoutes      DriverRoute[]    @relation("DriverRoutes")
+  sentShipments     Shipment[]       @relation("SentShipments")
+  shipmentJobs      ShipmentJob[]    @relation("DriverJobs")
+}
+
+enum DriverVerificationStatus {
+  NOT_STARTED
+  PENDING
+  IN_PROGRESS
+  IN_REVIEW
+  APPROVED
+  DECLINED
+  RESUBMITTED
+  EXPIRED
+  ABANDONED
+  KYC_EXPIRED
 }
 
 // ─────────────────────────────────────────────
@@ -157,8 +183,8 @@ model Payment {
   currency         String        @default("ARS")
   status           PaymentStatus @default(PENDING)
 
-  tripId           String
-  trip             Trip          @relation(fields: [tripId], references: [id])
+  tripId           String?
+  trip             Trip?         @relation(fields: [tripId], references: [id])
   userId           String
   user             User          @relation(fields: [userId], references: [id])
 
@@ -168,7 +194,10 @@ model Payment {
   packageRequestId String?       @unique
   packageRequest   PackageRequest? @relation(fields: [packageRequestId], references: [id])
 
-  externalId       String?       // ID del procesador (Mercado Pago, etc.)
+  shipmentJobId    String?       @unique
+  shipmentJob      ShipmentJob?  @relation(fields: [shipmentJobId], references: [id])
+
+  externalId       String?
 
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
@@ -180,4 +209,131 @@ enum PaymentStatus {
   RELEASED
   REFUNDED
   FAILED
+}
+
+// ─────────────────────────────────────────────
+// DRIVER ROUTE (corredor habitual del conductor)
+// ─────────────────────────────────────────────
+
+model DriverRoute {
+  id                String      @id @default(cuid())
+  driverId          String
+  driver            User        @relation("DriverRoutes", fields: [driverId], references: [id])
+
+  originCity        String
+  waypointCities    String[]    @default([])
+  destinationCity   String
+
+  daysOfWeek        DayOfWeek[]
+  departureTimeFrom String?
+  departureTimeTo   String?
+
+  vehicleType       VehicleType
+  licensePlate      String?
+  vehicleModel      String?
+  vehicleColor      String?
+  maxWeightKg       Float
+  pricePerKg        Float?
+
+  isActive          Boolean     @default(true)
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  shipmentJobs      ShipmentJob[]
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum VehicleType {
+  MOTO
+  AUTO
+  CAMIONETA
+  CAMION
+}
+
+// ─────────────────────────────────────────────
+// SHIPMENT (pedido de encomienda del usuario)
+// ─────────────────────────────────────────────
+
+model Shipment {
+  id                   String         @id @default(cuid())
+  senderId             String
+  sender               User           @relation("SentShipments", fields: [senderId], references: [id])
+
+  originCity           String
+  destinationCity      String
+  originAddress        String
+  deliveryAddress      String
+
+  weightKg             Float
+  packageSize          PackageSize
+  preferredDate        DateTime?
+
+  pickupContactName    String
+  pickupContactPhone   String
+  recipientDetails     String
+  notes                String?
+
+  candidateDriverIds   String[]       @default([])
+  lastNotifiedAt       DateTime?
+  status               ShipmentStatus @default(SEARCHING)
+
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  job                  ShipmentJob?
+}
+
+enum PackageSize {
+  SMALL
+  MEDIUM
+  LARGE
+  BULKY
+}
+
+enum ShipmentStatus {
+  SEARCHING
+  ASSIGNED
+  PICKED_UP
+  DELIVERED
+  CANCELLED
+  NO_COVERAGE
+}
+
+// ─────────────────────────────────────────────
+// SHIPMENT JOB (match confirmado conductor-pedido)
+// ─────────────────────────────────────────────
+
+model ShipmentJob {
+  id          String      @id @default(cuid())
+  shipmentId  String      @unique
+  shipment    Shipment    @relation(fields: [shipmentId], references: [id])
+  driverId    String
+  driver      User        @relation("DriverJobs", fields: [driverId], references: [id])
+  routeId     String
+  route       DriverRoute @relation(fields: [routeId], references: [id])
+
+  status      JobStatus   @default(ACTIVE)
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  payment     Payment?
+}
+
+enum JobStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
 }

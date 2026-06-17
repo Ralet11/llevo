@@ -10,6 +10,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -21,6 +22,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
+import { Calendar } from 'react-native-calendars'
 import MapView, { Marker, Polyline, type LatLng, type Region } from 'react-native-maps'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppDrawer } from '../../components/app/AppDrawer'
@@ -28,6 +30,7 @@ import { IconButton } from '../../components/ui/IconButton'
 import { darkMapStyle } from '../../constants/mapStyle'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
+import { api, ApiError } from '../../lib/api'
 import {
   autocompletePlaces,
   computeRoutePreview,
@@ -51,7 +54,8 @@ type SearchReturnStage = 'idle' | 'results'
 type SearchField = 'origin' | 'destination'
 type RouteOfferId = 'economico' | 'moto' | 'grupo'
 type DeliveryPackageSize = 'small' | 'medium' | 'large' | 'bulky'
-type DeliveryRequestStatus = 'idle' | 'searching' | 'accepted'
+type DeliveryRequestStatus = 'idle' | 'searching' | 'accepted' | 'no_coverage'
+type DeliveryWizardStep = 'route' | 'package' | 'contacts'
 
 type RouteOffer = {
   id: RouteOfferId
@@ -68,6 +72,8 @@ type SearchResult = {
   source: 'live' | 'fallback'
   originLabel: string
   destinationLabel: string
+  originCity: string | null
+  destinationCity: string | null
   durationLabel: string
   distanceLabel: string
   routeCoordinates: LatLng[]
@@ -87,20 +93,21 @@ type PlacePreset = {
 type DeliveryDraft = {
   estimatedWeight: string
   estimatedSize: DeliveryPackageSize | null
+  pickupAddress: string   // dirección exacta de retiro (calle, número, piso)
+  pickupContactName: string
+  pickupContactPhone: string
   notes: string
-  deliveryAddress: string
+  deliveryAddress: string // referencia adicional para la entrega
   deliveryDetails: string
   declarationAccepted: boolean
+  preferredDate: string | null // YYYY-MM-DD, null = envío inmediato
 }
 
-type DeliveryDriverProfile = {
+type AssignedDriver = {
   name: string
-  rating: string
-  completedTrips: string
-  vehicle: string
-  plate: string
-  eta: string
-  note: string
+  phone: string | null
+  rating: number | null
+  ratingCount: number
 }
 
 const MAP_MARKERS = [
@@ -166,44 +173,49 @@ const DELIVERY_SIZE_OPTIONS: {
   { id: 'bulky', label: 'Grande', subtitle: 'Valija o bulto grande' },
 ]
 
+const DELIVERY_WIZARD_STEPS: {
+  id: DeliveryWizardStep
+  label: string
+  title: string
+  subtitle: string
+  cta: string
+}[] = [
+  {
+    id: 'route',
+    label: 'Ruta',
+    title: 'Retiro y destino',
+    subtitle: 'Defini desde donde sale el paquete y a donde lo enviamos.',
+    cta: 'Continuar',
+  },
+  {
+    id: 'package',
+    label: 'Paquete',
+    title: 'Detalles del paquete',
+    subtitle: 'Cargamos peso, tamano y referencias para asignar mejor el viaje.',
+    cta: 'Continuar',
+  },
+  {
+    id: 'contacts',
+    label: 'Entrega',
+    title: 'Contacto y confirmacion',
+    subtitle: 'Necesitamos los datos del retiro y de la recepcion antes de buscar conductor.',
+    cta: 'Buscar conductor',
+  },
+]
+
 const EMPTY_DELIVERY_DRAFT: DeliveryDraft = {
   estimatedWeight: '',
   estimatedSize: null,
+  pickupAddress: '',
+  pickupContactName: '',
+  pickupContactPhone: '',
   notes: '',
   deliveryAddress: '',
   deliveryDetails: '',
   declarationAccepted: false,
+  preferredDate: null,
 }
 
-const DELIVERY_DRIVER_MOCKS: Record<RouteOfferId, DeliveryDriverProfile> = {
-  economico: {
-    name: 'Nicolas M.',
-    rating: '4.9',
-    completedTrips: '128 viajes',
-    vehicle: 'Fiat Cronos gris',
-    plate: 'AF 512 KR',
-    eta: 'Llega al retiro en 9 min',
-    note: 'Te escribe al llegar al punto de retiro para coordinar la carga.',
-  },
-  moto: {
-    name: 'Lucia R.',
-    rating: '4.8',
-    completedTrips: '214 entregas',
-    vehicle: 'Honda Wave 110 roja',
-    plate: 'A214BCD',
-    eta: 'Llega al retiro en 6 min',
-    note: 'Ideal para paquetes chicos y entregas rapidas sin demoras de trafico.',
-  },
-  grupo: {
-    name: 'Diego P.',
-    rating: '5.0',
-    completedTrips: '86 viajes',
-    vehicle: 'Renault Kangoo blanca',
-    plate: 'AE 908 LT',
-    eta: 'Llega al retiro en 12 min',
-    note: 'Tiene espacio para bultos grandes y referencias adicionales del paquete.',
-  },
-}
 
 function normalizeText(value: string) {
   return value
@@ -267,22 +279,54 @@ function formatDeliveryWeight(weight: string) {
   return `${parsed.toLocaleString('es-AR', { maximumFractionDigits: 1 })} kg`
 }
 
+function validateDeliveryRouteStep(destination: string) {
+  if (!destination.trim()) return 'Ingresa a donde enviamos el paquete.'
+  return null
+}
+
+function validateDeliveryPackageStep(draft: DeliveryDraft) {
+  const parsedWeight = Number.parseFloat(draft.estimatedWeight.trim().replace(',', '.'))
+
+  if (!draft.estimatedWeight.trim()) return 'Completa el peso estimado del paquete.'
+  if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) return 'Ingresa un peso estimado valido.'
+  if (!draft.estimatedSize) return 'Selecciona el tamano estimado del paquete.'
+
+  return null
+}
+
+function validateDeliveryContactsStep(draft: DeliveryDraft) {
+  if (!draft.pickupAddress.trim()) return 'Ingresa la dirección exacta de retiro (calle y número).'
+  if (!draft.pickupContactName.trim()) return 'Ingresa tu nombre o el del contacto en origen.'
+  if (!draft.pickupContactPhone.trim()) return 'Ingresa un telefono de contacto en origen.'
+  if (!draft.deliveryDetails.trim()) return 'Agrega los datos de entrega.'
+  if (!draft.declarationAccepted) return 'Acepta la declaracion jurada para continuar.'
+
+  return null
+}
+
 function getPreferredDeliveryOfferId(size: DeliveryPackageSize | null): RouteOfferId {
   if (size === 'small' || size === 'medium') return 'moto'
   if (size === 'large' || size === 'bulky') return 'grupo'
   return 'economico'
 }
 
-function validateDeliveryDraft(draft: DeliveryDraft) {
-  const parsedWeight = Number.parseFloat(draft.estimatedWeight.trim().replace(',', '.'))
+function validateDeliveryDraft(destination: string, draft: DeliveryDraft) {
+  return (
+    validateDeliveryRouteStep(destination) ??
+    validateDeliveryPackageStep(draft) ??
+    validateDeliveryContactsStep(draft)
+  )
+}
 
-  if (!draft.estimatedWeight.trim()) return 'Completa el peso estimado del paquete.'
-  if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) return 'Ingresa un peso estimado valido.'
-  if (!draft.estimatedSize) return 'Selecciona el tamano estimado del paquete.'
-  if (!draft.deliveryDetails.trim()) return 'Agrega los datos de entrega.'
-  if (!draft.declarationAccepted) return 'Acepta la declaracion jurada para continuar.'
+function getDeliveryWizardStartStep(destination: string, draft: DeliveryDraft): DeliveryWizardStep {
+  if (validateDeliveryRouteStep(destination)) return 'route'
+  if (validateDeliveryPackageStep(draft)) return 'package'
+  return 'contacts'
+}
 
-  return null
+function extractCity(label: string): string {
+  const parts = label.split(',').map(s => s.trim()).filter(Boolean)
+  return parts[0] ?? label
 }
 
 function toLatLng(region: Region): LatLng {
@@ -429,6 +473,8 @@ function buildFallbackSearchResult(originQuery: string, destinationQuery: string
     source: 'fallback',
     originLabel: origin.label,
     destinationLabel: destination.label,
+    originCity: null,
+    destinationCity: null,
     durationLabel: formatDurationSeconds(durationSeconds),
     distanceLabel: formatDistance(distanceMeters),
     routeCoordinates,
@@ -448,6 +494,8 @@ function buildLiveSearchResult(route: RoutePreview): SearchResult {
     source: 'live',
     originLabel: route.origin.formattedAddress || route.origin.label,
     destinationLabel: route.destination.formattedAddress || route.destination.label,
+    originCity: route.origin.city,
+    destinationCity: route.destination.city,
     durationLabel: formatDurationSeconds(route.durationSeconds),
     distanceLabel: formatDistance(route.distanceMeters),
     routeCoordinates: normalizedRoute,
@@ -501,7 +549,7 @@ function SearchMarker({
 }
 
 export default function AppHomeScreen() {
-  const { user, logout } = useAuth()
+  const { user, token, logout } = useAuth()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0)
@@ -531,13 +579,17 @@ export default function AppHomeScreen() {
   const [routeLoading, setRouteLoading] = useState(false)
   const [serviceMessage, setServiceMessage] = useState<string | null>(null)
   const [deliveryDraft, setDeliveryDraft] = useState<DeliveryDraft>(EMPTY_DELIVERY_DRAFT)
+  const [showDatePicker, setShowDatePicker] = useState(false)
   const [deliveryFormError, setDeliveryFormError] = useState<string | null>(null)
+  const [deliveryWizardStep, setDeliveryWizardStep] = useState<DeliveryWizardStep>('route')
   const [deliveryRequestStatus, setDeliveryRequestStatus] = useState<DeliveryRequestStatus>('idle')
-  const [deliveryRequestSecondsLeft, setDeliveryRequestSecondsLeft] = useState(0)
+  const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null)
+  const [currentShipmentId, setCurrentShipmentId] = useState<string | null>(null)
   const [searchSessionToken, setSearchSessionToken] = useState('')
   const idleProgress = useRef(new Animated.Value(1)).current
   const searchProgress = useRef(new Animated.Value(0)).current
   const resultsProgress = useRef(new Animated.Value(0)).current
+  const searchingPulse = useRef(new Animated.Value(0)).current
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const screenHeight = useRef(Dimensions.get('screen').height).current
 
@@ -652,26 +704,139 @@ export default function AppHomeScreen() {
   }, [resultsProgress, searchStage])
 
   useEffect(() => {
-    if (searchStage !== 'delivery_tracking' || deliveryRequestStatus !== 'searching') {
-      return
+    if (searchStage !== 'delivery_tracking' || !currentShipmentId || !token) return
+    if (deliveryRequestStatus === 'accepted' || deliveryRequestStatus === 'no_coverage') return
+
+    let cancelled = false
+
+    type ShipmentPollResponse = {
+      shipment: {
+        status: string
+        job?: {
+          driver: { name: string; phone: string | null; rating: number | null; ratingCount: number }
+        } | null
+      }
     }
 
-    setDeliveryRequestSecondsLeft(10)
+    async function poll() {
+      try {
+        const data = await api.get<ShipmentPollResponse>(
+          `/shipments/${currentShipmentId}`,
+          token!
+        )
+        if (cancelled) return
+        if (data.shipment.status === 'ASSIGNED') {
+          if (data.shipment.job?.driver) {
+            const d = data.shipment.job.driver
+            setAssignedDriver({ name: d.name, phone: d.phone, rating: d.rating, ratingCount: d.ratingCount })
+          }
+          setDeliveryRequestStatus('accepted')
+        } else if (data.shipment.status === 'NO_COVERAGE') {
+          setDeliveryRequestStatus('no_coverage')
+        }
+      } catch {
+        // falla silenciosamente, reintenta en el proximo ciclo
+      }
+    }
 
-    const intervalId = setInterval(() => {
-      setDeliveryRequestSecondsLeft(current => (current > 0 ? current - 1 : 0))
-    }, 1000)
-
-    const timeoutId = setTimeout(() => {
-      setDeliveryRequestStatus('accepted')
-      setDeliveryRequestSecondsLeft(0)
-    }, 10000)
+    poll()
+    const intervalId = setInterval(poll, 5000)
 
     return () => {
+      cancelled = true
       clearInterval(intervalId)
-      clearTimeout(timeoutId)
     }
-  }, [deliveryRequestStatus, searchStage])
+  }, [currentShipmentId, searchStage, token, deliveryRequestStatus])
+
+  // Cinematic map animation while searching for a driver.
+  // Sequence (loops): zoom origin → wide route view → zoom destination → wide route view
+  // Uses only animateCamera (no fitToCoordinates) to prevent white tile flash.
+  useEffect(() => {
+    if (
+      searchStage !== 'delivery_tracking' ||
+      deliveryRequestStatus !== 'searching' ||
+      !routeResult
+    ) return
+
+    const origin = routeResult.originPoint
+    const destination = routeResult.destinationPoint
+    const midLat = (origin.latitude + destination.latitude) / 2
+    const midLng = (origin.longitude + destination.longitude) / 2
+
+    // Approximate route span to pick a wide-view zoom
+    const latDelta = Math.abs(origin.latitude - destination.latitude)
+    const lngDelta = Math.abs(origin.longitude - destination.longitude)
+    const span = Math.max(latDelta, lngDelta)
+    // altitude ~= span * 111000 * 3.5 (rough meters above ground for iOS)
+    const altMid = Math.max(3000, Math.min(span * 111000 * 3.5, 14000))
+    const zoomMid = Math.max(11, Math.min(14 - Math.log2(span * 111), 14))
+
+    // Pan between points keeping the same zoom level as the route view.
+    // Using the same latitudeDelta avoids loading new tile zoom levels → no white flash.
+    const routeDelta = Math.max(span * 1.6, 0.06)
+    const MOVE_CLOSE = 2000
+    const MOVE_MID = 2400
+    const HOLD_CLOSE = 3000
+    const HOLD_MID = 2400
+
+    // Pan close to each point but keep the same zoom as the route overview
+    const originRegion = { latitude: origin.latitude, longitude: origin.longitude, latitudeDelta: routeDelta, longitudeDelta: routeDelta }
+    const destinationRegion = { latitude: destination.latitude, longitude: destination.longitude, latitudeDelta: routeDelta, longitudeDelta: routeDelta }
+    const midRegion = { latitude: midLat, longitude: midLng, latitudeDelta: routeDelta, longitudeDelta: routeDelta }
+
+    const handles: ReturnType<typeof setTimeout>[] = []
+    let loopHandle: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+
+    function at(t: number, fn: () => void) {
+      const h = setTimeout(() => { if (!stopped) fn() }, t)
+      handles.push(h)
+    }
+
+    function runCycle() {
+      let t = 0
+
+      // 1. Pan to origin
+      at(t, () => mapRef.current?.animateToRegion(originRegion, MOVE_CLOSE))
+      t += MOVE_CLOSE + HOLD_CLOSE
+
+      // 2. Pan to mid route view
+      at(t, () => mapRef.current?.animateToRegion(midRegion, MOVE_MID))
+      t += MOVE_MID + HOLD_MID
+
+      // 3. Pan to destination
+      at(t, () => mapRef.current?.animateToRegion(destinationRegion, MOVE_CLOSE))
+      t += MOVE_CLOSE + HOLD_CLOSE
+
+      // 4. Pan back to mid route view, then loop
+      at(t, () => mapRef.current?.animateToRegion(midRegion, MOVE_MID))
+      t += MOVE_MID + HOLD_MID
+
+      loopHandle = setTimeout(() => { if (!stopped) runCycle() }, t)
+    }
+
+    runCycle()
+
+    return () => {
+      stopped = true
+      handles.forEach(clearTimeout)
+      if (loopHandle) clearTimeout(loopHandle)
+    }
+  }, [searchStage, deliveryRequestStatus, routeResult])
+
+  useEffect(() => {
+    searchingPulse.setValue(0)
+    if (deliveryRequestStatus !== 'searching') return
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(searchingPulse, { toValue: 1, duration: 1100, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(searchingPulse, { toValue: 0, duration: 0, useNativeDriver: true }),
+        Animated.delay(300),
+      ])
+    )
+    anim.start()
+    return () => { anim.stop(); searchingPulse.setValue(0) }
+  }, [deliveryRequestStatus, searchingPulse])
 
   useEffect(() => {
     return () => {
@@ -817,19 +982,29 @@ export default function AppHomeScreen() {
       blurTimeoutRef.current = null
     }
 
+    const nextWizardStep =
+      selectedCategory === 'entrega'
+        ? getDeliveryWizardStartStep(routeResult?.destinationLabel ?? destinationInput, deliveryDraft)
+        : null
+
     setSearchReturnStage(returnStage)
     setServiceMessage(null)
+    if (nextWizardStep) {
+      setDeliveryWizardStep(nextWizardStep)
+    }
     setOriginInput(routeResult?.originLabel ?? currentLocationLabel)
     setDestinationInput(routeResult?.destinationLabel ?? destinationInput)
-    setFocusedField('destination')
+    setFocusedField(nextWizardStep === 'route' || !nextWizardStep ? 'destination' : null)
     setSearchStage('editing')
     setSearchSessionToken(createSessionToken())
 
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        destinationInputRef.current?.focus()
-      }, 120)
-    })
+    if (nextWizardStep === 'route' || !nextWizardStep) {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          destinationInputRef.current?.focus()
+        }, 120)
+      })
+    }
   }
 
   function closeSearchComposer() {
@@ -855,15 +1030,55 @@ export default function AppHomeScreen() {
     setSelectedOfferId('economico')
     setServiceMessage(null)
     setDeliveryDraft(EMPTY_DELIVERY_DRAFT)
+    setShowDatePicker(false)
     setDeliveryFormError(null)
+    setDeliveryWizardStep('route')
     setDeliveryRequestStatus('idle')
-    setDeliveryRequestSecondsLeft(0)
+    setAssignedDriver(null)
+    setCurrentShipmentId(null)
     centerMap()
   }
 
   function patchDeliveryDraft(patch: Partial<DeliveryDraft>) {
     setDeliveryDraft(current => ({ ...current, ...patch }))
     setDeliveryFormError(null)
+  }
+
+  function goToPreviousDeliveryWizardStep() {
+    const currentIndex = DELIVERY_WIZARD_STEPS.findIndex(step => step.id === deliveryWizardStep)
+    if (currentIndex <= 0) return
+
+    Keyboard.dismiss()
+    setFocusedField(null)
+    setDeliveryFormError(null)
+    setDeliveryWizardStep(DELIVERY_WIZARD_STEPS[currentIndex - 1]?.id ?? 'route')
+  }
+
+  function handleDeliveryWizardNextStep() {
+    const validationMessage =
+      deliveryWizardStep === 'route'
+        ? validateDeliveryRouteStep(destinationInput)
+        : deliveryWizardStep === 'package'
+          ? validateDeliveryPackageStep(deliveryDraft)
+          : validateDeliveryContactsStep(deliveryDraft)
+
+    if (validationMessage) {
+      setDeliveryFormError(validationMessage)
+      return
+    }
+
+    const currentIndex = DELIVERY_WIZARD_STEPS.findIndex(step => step.id === deliveryWizardStep)
+    const nextStep = DELIVERY_WIZARD_STEPS[currentIndex + 1]?.id
+
+    if (!nextStep) {
+      void submitSearch()
+      return
+    }
+
+    Keyboard.dismiss()
+    setFocusedField(null)
+    setDeliveryFormError(null)
+    setDeliveryWizardStep(nextStep)
   }
 
   function handleFieldFocus(field: SearchField) {
@@ -911,6 +1126,40 @@ export default function AppHomeScreen() {
     return suggestions[0] ?? null
   }
 
+  async function submitShipmentToAPI(nextResult: SearchResult) {
+    if (!token) return
+    try {
+      const weightKg = parseFloat(deliveryDraft.estimatedWeight.trim().replace(',', '.'))
+      const data = await api.post<{ shipment: { id: string; status: string } }>('/shipments', {
+        originCity: nextResult.originCity ?? extractCity(nextResult.originLabel),
+        destinationCity: nextResult.destinationCity ?? extractCity(nextResult.destinationLabel),
+        originAddress: deliveryDraft.pickupAddress.trim() || nextResult.originLabel,
+        deliveryAddress: [destinationInput, deliveryDraft.deliveryAddress].filter(Boolean).join(', '),
+        weightKg,
+        packageSize: (deliveryDraft.estimatedSize ?? 'medium').toUpperCase(),
+        pickupContactName: deliveryDraft.pickupContactName || (user?.name ?? ''),
+        pickupContactPhone: deliveryDraft.pickupContactPhone || (user?.phone ?? ''),
+        recipientDetails: deliveryDraft.deliveryDetails,
+        notes: deliveryDraft.notes || undefined,
+        // Noon ART (UTC-3) on the selected date → 15:00 UTC
+        preferredDate: deliveryDraft.preferredDate
+          ? `${deliveryDraft.preferredDate}T15:00:00.000Z`
+          : undefined,
+      }, token)
+
+      setCurrentShipmentId(data.shipment.id)
+      if (data.shipment.status === 'NO_COVERAGE') {
+        setDeliveryRequestStatus('no_coverage')
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        await logout()
+        return
+      }
+      setServiceMessage(err instanceof Error ? err.message : 'Error al registrar el pedido.')
+    }
+  }
+
   function startDeliveryTracking(nextResult: SearchResult, preferredOfferId?: RouteOfferId) {
     const nextOfferId: RouteOfferId = preferredOfferId && nextResult.offers.some(offer => offer.id === preferredOfferId)
       ? preferredOfferId
@@ -920,8 +1169,9 @@ export default function AppHomeScreen() {
     setSearchReturnStage('results')
     setFocusedField(null)
     setDeliveryRequestStatus('searching')
-    setDeliveryRequestSecondsLeft(10)
     setSearchStage('delivery_tracking')
+
+    submitShipmentToAPI(nextResult).catch(() => {})
 
     setTimeout(() => {
       fitRouteOnMap(nextResult)
@@ -936,7 +1186,7 @@ export default function AppHomeScreen() {
     if (!nextDestinationValue) return
 
     if (selectedCategory === 'entrega') {
-      const validationMessage = validateDeliveryDraft(deliveryDraft)
+      const validationMessage = validateDeliveryDraft(nextDestinationValue, deliveryDraft)
       if (validationMessage) {
         setDeliveryFormError(validationMessage)
         return
@@ -1049,8 +1299,9 @@ export default function AppHomeScreen() {
     if (selectedCategory === 'entrega') {
       setServiceMessage(null)
       setDeliveryRequestStatus('searching')
-      setDeliveryRequestSecondsLeft(10)
       setSearchStage('delivery_tracking')
+
+      submitShipmentToAPI(routeResult).catch(() => {})
 
       setTimeout(() => {
         fitRouteOnMap(routeResult)
@@ -1089,6 +1340,10 @@ export default function AppHomeScreen() {
     setDestinationInput(suggestion.text)
     setActiveSuggestions([])
     setSuggestionsLoading(false)
+    if (isDeliveryMode) {
+      setDeliveryFormError(null)
+      return
+    }
     void submitSearch({ destination: suggestion })
   }
 
@@ -1103,30 +1358,29 @@ export default function AppHomeScreen() {
   const visibleMarkers = MAP_MARKERS.filter(marker => marker.category === selectedCategory)
   const showingRoute = routeResult !== null
   const activeOffer = routeResult?.offers.find(offer => offer.id === selectedOfferId) ?? routeResult?.offers[0] ?? null
-  const deliveryDriver = activeOffer ? DELIVERY_DRIVER_MOCKS[activeOffer.id] : null
   const activeQuery = focusedField === 'origin' ? originInput : destinationInput
   const isDeliveryMode = selectedCategory === 'entrega'
   const isResultsStage = searchStage === 'results'
   const isDeliveryTrackingStage = searchStage === 'delivery_tracking'
   const isMapDetailsStage = isResultsStage || isDeliveryTrackingStage
+  const deliveryWizardIndex = DELIVERY_WIZARD_STEPS.findIndex(step => step.id === deliveryWizardStep)
+  const activeDeliveryWizardStep = DELIVERY_WIZARD_STEPS[deliveryWizardIndex] ?? DELIVERY_WIZARD_STEPS[0]
   const showSuggestions = focusedField !== null && activeQuery.trim().length >= 2 && !isCurrentLocationQuery(activeQuery, currentLocationLabel)
-  const composerMaxHeight = Math.min(screenHeight - topInset - 18, Math.round(screenHeight * 0.88))
-  const searchComposerTitle = 'Que envias?'
+  const searchComposerTitle = isDeliveryMode ? 'Coordinar entrega' : 'Que envias?'
   const destinationPlaceholder = 'A donde lo enviamos?'
-  const submitRouteLabel = 'Iniciar busqueda'
+  const submitRouteLabel = isDeliveryMode ? activeDeliveryWizardStep.cta : 'Iniciar busqueda'
   const resultsButtonLabel = isDeliveryMode ? 'Confirmar entrega' : 'Encontrar ofertas'
+  const showDeliveryRouteStep = !isDeliveryMode || deliveryWizardStep === 'route'
+  const showDeliveryPackageStep = isDeliveryMode && deliveryWizardStep === 'package'
+  const showDeliveryContactsStep = isDeliveryMode && deliveryWizardStep === 'contacts'
+  const canGoBackInWizard = isDeliveryMode && deliveryWizardIndex > 0
+  const submitRouteDisabled =
+    routeLoading ||
+    (showDeliveryRouteStep ? !destinationInput.trim() : false)
 
   const idleTranslateY = idleProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [22, 0],
-  })
-  const searchComposerTranslateY = searchProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [34, 0],
-  })
-  const searchComposerScale = searchProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.96, 1],
   })
   const resultsTranslateY = resultsProgress.interpolate({
     inputRange: [0, 1],
@@ -1144,12 +1398,14 @@ export default function AppHomeScreen() {
         style={StyleSheet.absoluteFill}
         customMapStyle={darkMapStyle}
         initialRegion={DEFAULT_MAP_REGION}
-        showsBuildings
+        showsBuildings={false}
         showsCompass={false}
         showsMyLocationButton={false}
         showsUserLocation={status === 'device'}
         toolbarEnabled={false}
         moveOnMarkerPress={false}
+        loadingBackgroundColor={Theme.colors.background}
+        loadingIndicatorColor={Theme.colors.lime}
         onUserLocationChange={event => {
           const coordinate = event.nativeEvent.coordinate
           if (!coordinate) return
@@ -1223,6 +1479,7 @@ export default function AppHomeScreen() {
           ))
         )}
       </MapView>
+
 
       <View pointerEvents="box-none" style={styles.overlay}>
         <Animated.View
@@ -1378,117 +1635,148 @@ export default function AppHomeScreen() {
                 </View>
               )}
 
-              {isDeliveryTrackingStage && isDeliveryMode && activeOffer && (
-                <View style={styles.deliveryTrackingHeroCard}>
-                  <View style={styles.deliveryTrackingHeroRow}>
-                    <View
-                      style={[
-                        styles.deliveryTrackingHeroIcon,
-                        deliveryRequestStatus === 'accepted' && styles.deliveryTrackingHeroIconAccepted,
-                      ]}
-                    >
-                      {deliveryRequestStatus === 'accepted' ? (
-                        <Ionicons name="checkmark" size={18} color={Theme.colors.black} />
-                      ) : (
-                        <ActivityIndicator color={Theme.colors.black} size="small" />
-                      )}
-                    </View>
+              {isDeliveryTrackingStage && isDeliveryMode && (
+                <>
+                  {deliveryRequestStatus === 'searching' && (
+                    <View style={styles.trackingPanel}>
+                      <View style={styles.trackingPanelHeader}>
+                        <View style={styles.trackingPulseWrap}>
+                          <Animated.View
+                            style={[
+                              styles.trackingPulseRing,
+                              {
+                                transform: [{ scale: searchingPulse.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1.6] }) }],
+                                opacity: searchingPulse.interpolate({ inputRange: [0, 0.25, 1], outputRange: [1, 0.9, 0] }),
+                              },
+                            ]}
+                          />
+                          <View style={styles.trackingPulseCore} />
+                        </View>
+                        <View style={styles.trackingPanelCopy}>
+                          <Text style={styles.trackingPanelEyebrow}>Buscando conductor</Text>
+                          <Text style={styles.trackingPanelTitle}>Avisando en tu zona de retiro...</Text>
+                        </View>
+                      </View>
 
-                    <View style={styles.deliveryTrackingHeroCopy}>
-                      <Text style={styles.deliveryTrackingHeroEyebrow}>
-                        {deliveryRequestStatus === 'accepted' ? 'Driver asignado' : 'Buscando entrega'}
-                      </Text>
-                      <Text style={styles.deliveryTrackingHeroTitle}>
-                        {deliveryRequestStatus === 'accepted'
-                          ? `${deliveryDriver?.name ?? 'Un driver'} acepto tu entrega`
-                          : 'Estamos avisando a conductores cercanos'}
-                      </Text>
-                      <Text style={styles.deliveryTrackingHeroText}>
-                        {deliveryRequestStatus === 'accepted'
-                          ? `${deliveryDriver?.eta ?? 'Ya va camino al retiro'}.`
-                          : `Mientras no tengamos la red conectada, vamos a simular una aceptacion en ${formatCountdown(deliveryRequestSecondsLeft)}.`}
-                      </Text>
-                    </View>
+                      <View style={styles.trackingDivider} />
 
-                    <View
-                      style={[
-                        styles.deliveryTrackingBadge,
-                        deliveryRequestStatus === 'accepted' && styles.deliveryTrackingBadgeActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.deliveryTrackingBadgeText,
-                          deliveryRequestStatus === 'accepted' && styles.deliveryTrackingBadgeTextActive,
-                        ]}
-                      >
-                        {deliveryRequestStatus === 'accepted' ? 'OK' : formatCountdown(deliveryRequestSecondsLeft)}
-                      </Text>
-                    </View>
-                  </View>
+                      <View style={styles.trackingChipRow}>
+                        <View style={styles.trackingChip}>
+                          <Ionicons name="cube-outline" size={13} color={Theme.colors.lime} />
+                          <Text style={styles.trackingChipText}>{formatDeliveryWeight(deliveryDraft.estimatedWeight)}</Text>
+                        </View>
+                        <View style={styles.trackingChip}>
+                          <Ionicons name="resize-outline" size={13} color={Theme.colors.lime} />
+                          <Text style={styles.trackingChipText}>{getDeliverySizeLabel(deliveryDraft.estimatedSize)}</Text>
+                        </View>
+                      </View>
 
-                  <View style={styles.deliveryTrackingMetaRow}>
-                    <View style={styles.deliveryTrackingMetaPill}>
-                      <Ionicons name={activeOffer.icon} size={14} color={Theme.colors.lime} />
-                      <Text style={styles.deliveryTrackingMetaText}>{activeOffer.title}</Text>
+                      <TouchableOpacity style={styles.trackingGhostBtn} activeOpacity={0.8} onPress={closeSearchComposer}>
+                        <Text style={styles.trackingGhostBtnText}>Cancelar búsqueda</Text>
+                      </TouchableOpacity>
                     </View>
+                  )}
 
-                    <View style={styles.deliveryTrackingMetaPill}>
-                      <Ionicons name="cash-outline" size={14} color={Theme.colors.lime} />
-                      <Text style={styles.deliveryTrackingMetaText}>{formatPrice(activeOffer.price)}</Text>
-                    </View>
+                  {deliveryRequestStatus === 'accepted' && (
+                    <View style={[styles.trackingPanel, styles.trackingPanelAccepted]}>
+                      <View style={styles.trackingPanelHeader}>
+                        <View style={styles.trackingDriverAvatar}>
+                          <Text style={styles.trackingDriverAvatarText}>
+                            {(assignedDriver?.name ?? 'C').charAt(0).toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={styles.trackingPanelCopy}>
+                          <Text style={[styles.trackingPanelEyebrow, styles.trackingPanelEyebrowSuccess]}>
+                            ¡Conductor asignado!
+                          </Text>
+                          <Text style={styles.trackingDriverName}>{assignedDriver?.name ?? 'En camino'}</Text>
+                          {assignedDriver?.rating !== null && assignedDriver?.rating !== undefined && (
+                            <View style={styles.trackingDriverRatingRow}>
+                              <Ionicons name="star" size={11} color={Theme.colors.lime} />
+                              <Text style={styles.trackingDriverRatingText}>{assignedDriver.rating.toFixed(1)}</Text>
+                              {assignedDriver.ratingCount > 0 && (
+                                <Text style={styles.trackingDriverRatingCount}>
+                                  ({assignedDriver.ratingCount} viajes)
+                                </Text>
+                              )}
+                            </View>
+                          )}
+                        </View>
+                        {assignedDriver?.phone && (
+                          <TouchableOpacity
+                            style={styles.trackingPhoneBtn}
+                            activeOpacity={0.8}
+                            onPress={() => Linking.openURL(`tel:${assignedDriver.phone}`)}
+                          >
+                            <Ionicons name="call" size={16} color={Theme.colors.black} />
+                            <Text style={styles.trackingPhoneBtnText}>Llamar</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
 
-                    <View style={styles.deliveryTrackingMetaPill}>
-                      <Ionicons name="time-outline" size={14} color={Theme.colors.lime} />
-                      <Text style={styles.deliveryTrackingMetaText}>
-                        {deliveryRequestStatus === 'accepted' ? deliveryDriver?.eta ?? 'Asignado' : 'Esperando aceptacion'}
-                      </Text>
+                      <View style={styles.trackingDivider} />
+
+                      <View style={styles.trackingChipRow}>
+                        <View style={styles.trackingChip}>
+                          <Ionicons name="cube-outline" size={13} color={Theme.colors.lime} />
+                          <Text style={styles.trackingChipText}>{formatDeliveryWeight(deliveryDraft.estimatedWeight)}</Text>
+                        </View>
+                        <View style={styles.trackingChip}>
+                          <Ionicons name="resize-outline" size={13} color={Theme.colors.lime} />
+                          <Text style={styles.trackingChipText}>{getDeliverySizeLabel(deliveryDraft.estimatedSize)}</Text>
+                        </View>
+                        {deliveryDraft.deliveryDetails ? (
+                          <View style={[styles.trackingChip, { flex: 1 }]}>
+                            <Ionicons name="location-outline" size={13} color={Theme.colors.lime} />
+                            <Text style={[styles.trackingChipText, { flex: 1 }]} numberOfLines={1}>
+                              {deliveryDraft.deliveryDetails}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                     </View>
-                  </View>
-                </View>
+                  )}
+
+                  {deliveryRequestStatus === 'no_coverage' && (
+                    <View style={styles.trackingPanel}>
+                      <View style={styles.trackingNoCoverageTop}>
+                        <Ionicons name="alert-circle" size={30} color={Theme.colors.warning} />
+                        <Text style={styles.trackingNoCoverageTitle}>Sin cobertura disponible</Text>
+                        <Text style={styles.trackingNoCoverageBody}>
+                          No encontramos conductores para esta ruta. Intentá con otro destino o en otro momento.
+                        </Text>
+                      </View>
+                      <TouchableOpacity style={styles.trackingPrimaryBtn} activeOpacity={0.85} onPress={closeSearchComposer}>
+                        <Text style={styles.trackingPrimaryBtnText}>Modificar ruta</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
               )}
 
-              {isDeliveryMode && (
-                <View style={styles.deliverySummaryCard}>
-                  <View style={styles.deliverySummaryHeader}>
-                    <View style={styles.deliverySummaryIcon}>
-                      <Ionicons name="cube" size={16} color={Theme.colors.black} />
+              {isResultsStage && isDeliveryMode ? (
+                <>
+                  <View style={styles.deliveryRouteCard}>
+                    <View style={styles.deliveryRouteRow}>
+                      <View style={styles.deliveryRouteDot} />
+                      <Text style={styles.deliveryRouteLabel} numberOfLines={1}>{routeResult.originLabel}</Text>
+                      <Text style={styles.deliveryRouteMeta}>{routeResult.distanceLabel}</Text>
                     </View>
-                    <View style={styles.deliverySummaryCopy}>
-                      <Text style={styles.deliverySummaryTitle}>Entrega declarada</Text>
-                      <Text style={styles.deliverySummarySubtitle}>
-                        {formatDeliveryWeight(deliveryDraft.estimatedWeight)} / {getDeliverySizeLabel(deliveryDraft.estimatedSize)}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.deliverySummaryMetaRow}>
-                    <View style={styles.deliverySummaryPill}>
-                      <Ionicons name="location-outline" size={13} color={Theme.colors.lime} />
-                      <Text style={styles.deliverySummaryPillText} numberOfLines={1}>{routeResult.destinationLabel}</Text>
+                    <View style={styles.deliveryRouteLine} />
+                    <View style={styles.deliveryRouteRow}>
+                      <Ionicons name="location" size={14} color={Theme.colors.lime} />
+                      <Text style={styles.deliveryRouteLabel} numberOfLines={1}>{routeResult.destinationLabel}</Text>
+                      <Text style={styles.deliveryRouteMeta}>{routeResult.durationLabel}</Text>
                     </View>
                   </View>
 
-                  {deliveryDraft.deliveryAddress.trim() ? (
-                    <>
-                      <Text style={styles.deliverySummaryDetailLabel}>Referencia adicional</Text>
-                      <Text style={styles.deliverySummaryDetailText}>{deliveryDraft.deliveryAddress.trim()}</Text>
-                    </>
-                  ) : null}
-
-                  <Text style={styles.deliverySummaryDetailLabel}>Datos de entrega</Text>
-                  <Text style={styles.deliverySummaryDetailText}>{deliveryDraft.deliveryDetails}</Text>
-
-                  {deliveryDraft.notes.trim() ? (
-                    <>
-                      <Text style={styles.deliverySummaryDetailLabel}>Notas</Text>
-                      <Text style={styles.deliverySummaryDetailText}>{deliveryDraft.notes.trim()}</Text>
-                    </>
-                  ) : null}
-                </View>
-              )}
-
-              {isResultsStage ? (
+                  <TouchableOpacity activeOpacity={0.88} style={styles.deliveryStartBtn} onPress={handleOfferCTA}>
+                    <Ionicons name="cube-outline" size={18} color={Theme.colors.black} />
+                    <Text style={styles.deliveryStartBtnText}>Configurar entrega</Text>
+                    <Ionicons name="arrow-forward" size={16} color={Theme.colors.black} />
+                  </TouchableOpacity>
+                </>
+              ) : isResultsStage ? (
                 <>
                   <TouchableOpacity activeOpacity={0.86} style={styles.promoRow}>
                     <Text style={styles.promoText}>Tenes un codigo promocional? Usalo</Text>
@@ -1559,393 +1847,491 @@ export default function AppHomeScreen() {
                     <IconButton name="funnel-outline" onPress={() => openSearchComposer('results')} variant="light" />
                   </View>
                 </>
-              ) : isDeliveryTrackingStage ? (
-                <>
-                  <View style={styles.deliveryTrackingStepsCard}>
-                    {[
-                      {
-                        title: 'Solicitud enviada',
-                        description: `Compartimos el retiro en ${routeResult.originLabel} y la entrega en ${routeResult.destinationLabel}.`,
-                        state: 'done',
-                      },
-                      {
-                        title: deliveryRequestStatus === 'accepted' ? 'Driver confirmado' : 'Esperando aceptacion',
-                        description: deliveryRequestStatus === 'accepted'
-                          ? `${deliveryDriver?.name ?? 'El driver'} ya esta yendo al punto de retiro.`
-                          : 'Seguimos notificando conductores disponibles cerca de tu punto de retiro.',
-                        state: deliveryRequestStatus === 'accepted' ? 'done' : 'active',
-                      },
-                      {
-                        title: 'Salida al retiro',
-                        description: deliveryRequestStatus === 'accepted'
-                          ? deliveryDriver?.eta ?? 'Retiro en camino.'
-                          : `Asignacion automatica simulada en ${formatCountdown(deliveryRequestSecondsLeft)}.`,
-                        state: deliveryRequestStatus === 'accepted' ? 'done' : 'pending',
-                      },
-                    ].map(step => {
-                      const isDone = step.state === 'done'
-                      const isActive = step.state === 'active'
-
-                      return (
-                        <View key={step.title} style={styles.deliveryTrackingStepRow}>
-                          <View
-                            style={[
-                              styles.deliveryTrackingStepIndicator,
-                              isDone && styles.deliveryTrackingStepIndicatorDone,
-                              isActive && styles.deliveryTrackingStepIndicatorActive,
-                            ]}
-                          >
-                            <Ionicons
-                              name={isDone ? 'checkmark' : isActive ? 'time-outline' : 'ellipse-outline'}
-                              size={13}
-                              color={isDone || isActive ? Theme.colors.black : Theme.colors.textMuted}
-                            />
-                          </View>
-
-                          <View style={styles.deliveryTrackingStepCopy}>
-                            <Text style={styles.deliveryTrackingStepTitle}>{step.title}</Text>
-                            <Text style={styles.deliveryTrackingStepText}>{step.description}</Text>
-                          </View>
-                        </View>
-                      )
-                    })}
-                  </View>
-
-                  {deliveryRequestStatus === 'accepted' && deliveryDriver ? (
-                    <View style={styles.deliveryDriverCard}>
-                      <View style={styles.deliveryDriverHeader}>
-                        <View style={styles.deliveryDriverAvatar}>
-                          <Ionicons name="person" size={18} color={Theme.colors.black} />
-                        </View>
-
-                        <View style={styles.deliveryDriverCopy}>
-                          <Text style={styles.deliveryDriverName}>{deliveryDriver.name}</Text>
-                          <Text style={styles.deliveryDriverSubtitle}>
-                            {deliveryDriver.vehicle} · {deliveryDriver.completedTrips}
-                          </Text>
-                        </View>
-
-                        <View style={styles.deliveryDriverRatingBadge}>
-                          <Ionicons name="star" size={12} color={Theme.colors.black} />
-                          <Text style={styles.deliveryDriverRatingText}>{deliveryDriver.rating}</Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.deliveryDriverMetaRow}>
-                        <View style={styles.deliveryDriverMetaCard}>
-                          <Text style={styles.deliveryDriverMetaLabel}>Patente</Text>
-                          <Text style={styles.deliveryDriverMetaValue}>{deliveryDriver.plate}</Text>
-                        </View>
-
-                        <View style={styles.deliveryDriverMetaCard}>
-                          <Text style={styles.deliveryDriverMetaLabel}>Estado</Text>
-                          <Text style={styles.deliveryDriverMetaValue}>{deliveryDriver.eta}</Text>
-                        </View>
-                      </View>
-
-                      <Text style={styles.deliveryDriverNote}>{deliveryDriver.note}</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.deliveryTrackingHintCard}>
-                      <Ionicons name="flask-outline" size={17} color={Theme.colors.lime} />
-                      <Text style={styles.deliveryTrackingHintText}>
-                        Esta pantalla ya deja listo el flujo real. Como todavia no esta conectada la red de trabajadores,
-                        simulamos la aceptacion automaticamente a los 10 segundos.
-                      </Text>
-                    </View>
-                  )}
-                </>
               ) : null}
             </Animated.View>
           </>
         )}
 
-        {renderSearchComposer && (
-          <Animated.View
-            pointerEvents={searchStage === 'editing' ? 'auto' : 'none'}
-            style={[styles.searchOverlay, { opacity: searchProgress }]}
-          >
-            <Pressable style={StyleSheet.absoluteFill} onPress={closeSearchComposer} />
+        <Modal
+          visible={searchStage === 'editing'}
+          animationType="slide"
+          onRequestClose={closeSearchComposer}
+        >
+          <View style={styles.wizardScreen}>
+            <View style={[styles.wizardScreenHeader, { paddingTop: topInset + 8 }]}>
+              <TouchableOpacity style={styles.wizardBackBtn} onPress={closeSearchComposer} activeOpacity={0.8}>
+                <Ionicons name="arrow-back" size={20} color={Theme.colors.text} />
+              </TouchableOpacity>
+              <Text style={styles.wizardHeaderTitle}>{searchComposerTitle}</Text>
+              <View style={styles.wizardHeaderSpacer} />
+            </View>
 
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.searchOverlayKeyboard}>
-              <Animated.View
-                renderToHardwareTextureAndroid
-                style={[
-                  styles.searchComposerCard,
-                  {
-                    marginTop: topInset + 12,
-                    maxHeight: composerMaxHeight,
-                    transform: [
-                      { translateY: searchComposerTranslateY },
-                      { scale: searchComposerScale },
-                    ],
-                  },
-                ]}
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+                keyboardShouldPersistTaps="always"
+                contentContainerStyle={styles.wizardContent}
               >
-                <View style={styles.searchComposerHeader}>
-                  <Text style={styles.searchComposerTitle}>{searchComposerTitle}</Text>
-                  <IconButton name="close" onPress={closeSearchComposer} style={styles.searchComposerClose} />
-                </View>
-
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  bounces={false}
-                  keyboardShouldPersistTaps="always"
-                  contentContainerStyle={styles.searchComposerContent}
-                >
                   <View style={styles.searchFieldsArea}>
-                    <View style={styles.routeInputsStack}>
-                      <View style={[styles.routeInputCard, focusedField === 'origin' && styles.routeInputCardActive]}>
-                        <Ionicons name="locate" size={16} color={Theme.colors.textMuted} />
-                        <Pressable style={styles.routeInputCopy} onPress={() => originInputRef.current?.focus()}>
-                          <Text style={styles.routeInputLabel}>De</Text>
-                          <TextInput
-                            ref={originInputRef}
-                            value={originInput}
-                            onChangeText={updateOriginValue}
-                            placeholder="Tu ubicacion actual"
-                            placeholderTextColor={Theme.colors.textMuted}
-                            style={styles.routeInputText}
-                            selectionColor={Theme.colors.lime}
-                            onFocus={() => handleFieldFocus('origin')}
-                            onBlur={() => handleFieldBlur('origin')}
-                            returnKeyType="next"
-                            onSubmitEditing={() => {
-                              destinationInputRef.current?.focus()
-                              setFocusedField('destination')
-                            }}
-                          />
-                        </Pressable>
-                        <TouchableOpacity activeOpacity={0.82} style={styles.routeInputIconButton} onPress={() => {
-                          setOriginSelection(null)
-                          setOriginInput(currentLocationLabel)
-                        }}>
-                          <Ionicons name="navigate" size={16} color={Theme.colors.text} />
-                        </TouchableOpacity>
-                      </View>
+                    {isDeliveryMode && (
+                      <>
+                        <View style={styles.deliveryWizardProgressRow}>
+                          {DELIVERY_WIZARD_STEPS.map((step, index) => {
+                            const isActive = step.id === deliveryWizardStep
+                            const isDone = index < deliveryWizardIndex
 
-                      <View style={[styles.routeInputCard, focusedField === 'destination' && styles.routeInputCardActive]}>
-                        <Ionicons name="search" size={16} color={Theme.colors.textMuted} />
-                        <Pressable style={styles.routeInputCopy} onPress={() => destinationInputRef.current?.focus()}>
-                          <Text style={styles.routeInputLabel}>A</Text>
-                          <TextInput
-                            ref={destinationInputRef}
-                            value={destinationInput}
-                            onChangeText={updateDestinationValue}
-                            placeholder={destinationPlaceholder}
-                            placeholderTextColor={Theme.colors.textMuted}
-                            style={styles.routeInputText}
-                            selectionColor={Theme.colors.lime}
-                            returnKeyType="search"
-                            onFocus={() => handleFieldFocus('destination')}
-                            onBlur={() => handleFieldBlur('destination')}
-                            onSubmitEditing={() => void submitSearch()}
-                          />
-                        </Pressable>
-                        <TouchableOpacity activeOpacity={0.82} style={styles.routeInputIconButton} onPress={() => void submitSearch()}>
-                          <Ionicons name="sparkles" size={16} color={Theme.colors.text} />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    {showSuggestions && (
-                      <View style={styles.suggestionsPopover}>
-                        <Text style={styles.suggestionsPopoverTitle}>Sugerencias</Text>
-
-                        <View style={styles.suggestionsCard}>
-                          {suggestionsLoading ? (
-                            <View style={styles.suggestionLoadingRow}>
-                              <ActivityIndicator color={Theme.colors.lime} size="small" />
-                              <Text style={styles.suggestionLoadingText}>Buscando lugares...</Text>
-                            </View>
-                          ) : activeSuggestions.length > 0 ? (
-                            <ScrollView
-                              nestedScrollEnabled
-                              keyboardShouldPersistTaps="always"
-                              style={styles.suggestionsScroll}
-                            >
-                              {activeSuggestions.map(suggestion => (
-                                <TouchableOpacity
-                                  key={suggestion.placeId}
-                                  activeOpacity={0.86}
-                                  style={styles.suggestionRow}
-                                  onPress={() => handleSuggestionPress(suggestion)}
+                            return (
+                              <View
+                                key={step.id}
+                                style={[
+                                  styles.deliveryWizardProgressPill,
+                                  isActive && styles.deliveryWizardProgressPillActive,
+                                  isDone && styles.deliveryWizardProgressPillDone,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.deliveryWizardProgressStep,
+                                    isActive && styles.deliveryWizardProgressStepActive,
+                                    isDone && styles.deliveryWizardProgressStepDone,
+                                  ]}
                                 >
-                                  <View style={styles.suggestionIconWrap}>
-                                    <Ionicons name="location-outline" size={16} color={Theme.colors.lime} />
-                                  </View>
+                                  {index + 1}
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.deliveryWizardProgressText,
+                                    isActive && styles.deliveryWizardProgressTextActive,
+                                    isDone && styles.deliveryWizardProgressTextDone,
+                                  ]}
+                                >
+                                  {step.label}
+                                </Text>
+                              </View>
+                            )
+                          })}
+                        </View>
 
-                                  <View style={styles.suggestionCopy}>
-                                    <Text style={styles.suggestionTitle} numberOfLines={1}>{suggestion.mainText || suggestion.text}</Text>
-                                    <Text style={styles.suggestionSubtitle} numberOfLines={1}>
-                                      {suggestion.secondaryText || suggestion.text}
+                        <View style={styles.deliveryWizardIntroCard}>
+                          <Text style={styles.deliveryWizardStepEyebrow}>
+                            Paso {deliveryWizardIndex + 1} de {DELIVERY_WIZARD_STEPS.length}
+                          </Text>
+                          <Text style={styles.deliveryWizardStepTitle}>{activeDeliveryWizardStep.title}</Text>
+                          <Text style={styles.deliveryWizardStepText}>{activeDeliveryWizardStep.subtitle}</Text>
+                        </View>
+                      </>
+                    )}
+
+                    {showDeliveryRouteStep && (
+                      <View style={styles.routeStepArea}>
+                        <View style={styles.routeInputsStack}>
+                          <View style={[styles.routeInputCard, focusedField === 'origin' && styles.routeInputCardActive]}>
+                            <Ionicons name="locate" size={16} color={Theme.colors.textMuted} />
+                            <Pressable style={styles.routeInputCopy} onPress={() => originInputRef.current?.focus()}>
+                              <Text style={styles.routeInputLabel}>De</Text>
+                              <TextInput
+                                ref={originInputRef}
+                                value={originInput}
+                                onChangeText={updateOriginValue}
+                                placeholder="Tu ubicacion actual"
+                                placeholderTextColor={Theme.colors.textMuted}
+                                style={styles.routeInputText}
+                                selectionColor={Theme.colors.lime}
+                                onFocus={() => handleFieldFocus('origin')}
+                                onBlur={() => handleFieldBlur('origin')}
+                                returnKeyType="next"
+                                onSubmitEditing={() => {
+                                  destinationInputRef.current?.focus()
+                                  setFocusedField('destination')
+                                }}
+                              />
+                            </Pressable>
+                            <TouchableOpacity activeOpacity={0.82} style={styles.routeInputIconButton} onPress={() => {
+                              setOriginSelection(null)
+                              setOriginInput(currentLocationLabel)
+                            }}>
+                              <Ionicons name="navigate" size={16} color={Theme.colors.text} />
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={[styles.routeInputCard, focusedField === 'destination' && styles.routeInputCardActive]}>
+                            <Ionicons name="search" size={16} color={Theme.colors.textMuted} />
+                            <Pressable style={styles.routeInputCopy} onPress={() => destinationInputRef.current?.focus()}>
+                              <Text style={styles.routeInputLabel}>A</Text>
+                              <TextInput
+                                ref={destinationInputRef}
+                                value={destinationInput}
+                                onChangeText={updateDestinationValue}
+                                placeholder={destinationPlaceholder}
+                                placeholderTextColor={Theme.colors.textMuted}
+                                style={styles.routeInputText}
+                                selectionColor={Theme.colors.lime}
+                                returnKeyType={isDeliveryMode ? 'next' : 'search'}
+                                onFocus={() => handleFieldFocus('destination')}
+                                onBlur={() => handleFieldBlur('destination')}
+                                onSubmitEditing={() => {
+                                  if (isDeliveryMode) {
+                                    handleDeliveryWizardNextStep()
+                                    return
+                                  }
+                                  void submitSearch()
+                                }}
+                              />
+                            </Pressable>
+                            <TouchableOpacity
+                              activeOpacity={0.82}
+                              style={styles.routeInputIconButton}
+                              onPress={() => {
+                                if (isDeliveryMode) {
+                                  handleDeliveryWizardNextStep()
+                                  return
+                                }
+                                void submitSearch()
+                              }}
+                            >
+                              <Ionicons name={isDeliveryMode ? 'arrow-forward' : 'sparkles'} size={16} color={Theme.colors.text} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+
+                        {showSuggestions && (
+                          <View style={styles.suggestionsPopover}>
+                            <Text style={styles.suggestionsPopoverTitle}>Sugerencias</Text>
+
+                            <View style={styles.suggestionsCard}>
+                              {suggestionsLoading ? (
+                                <View style={styles.suggestionLoadingRow}>
+                                  <ActivityIndicator color={Theme.colors.lime} size="small" />
+                                  <Text style={styles.suggestionLoadingText}>Buscando lugares...</Text>
+                                </View>
+                              ) : activeSuggestions.length > 0 ? (
+                                <ScrollView
+                                  nestedScrollEnabled
+                                  keyboardShouldPersistTaps="always"
+                                  style={styles.suggestionsScroll}
+                                >
+                                  {activeSuggestions.map(suggestion => (
+                                    <TouchableOpacity
+                                      key={suggestion.placeId}
+                                      activeOpacity={0.86}
+                                      style={styles.suggestionRow}
+                                      onPress={() => handleSuggestionPress(suggestion)}
+                                    >
+                                      <View style={styles.suggestionIconWrap}>
+                                        <Ionicons name="location-outline" size={16} color={Theme.colors.lime} />
+                                      </View>
+
+                                      <View style={styles.suggestionCopy}>
+                                        <Text style={styles.suggestionTitle} numberOfLines={1}>{suggestion.mainText || suggestion.text}</Text>
+                                        <Text style={styles.suggestionSubtitle} numberOfLines={1}>
+                                          {suggestion.secondaryText || suggestion.text}
+                                        </Text>
+                                      </View>
+
+                                      {typeof suggestion.distanceMeters === 'number' && (
+                                        <Text style={styles.suggestionDistance}>{formatDistance(suggestion.distanceMeters)}</Text>
+                                      )}
+                                    </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              ) : (
+                                <Text style={styles.suggestionEmptyText}>No aparecieron sugerencias para esa busqueda todavia.</Text>
+                              )}
+                            </View>
+                          </View>
+                        )}
+                      </View>
+                    )}
+
+                    {showDeliveryPackageStep && (
+                      <View style={styles.deliverySection}>
+                        <View style={styles.deliverySectionHeader}>
+                          <View style={styles.deliverySectionBadge}>
+                            <Ionicons name="cube" size={15} color={Theme.colors.black} />
+                          </View>
+                          <View style={styles.deliverySectionCopy}>
+                            <Text style={styles.deliverySectionTitle}>Datos del paquete</Text>
+                            <Text style={styles.deliverySectionSubtitle}>
+                              Con esto elegimos el vehiculo correcto y evitamos rechazos por capacidad.
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.deliveryWizardSummaryCard}>
+                          <View style={styles.deliveryWizardSummaryRow}>
+                            <Ionicons name="flag" size={15} color={Theme.colors.lime} />
+                            <Text style={styles.deliveryWizardSummaryText} numberOfLines={1}>
+                              {destinationInput.trim() || 'Destino pendiente'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.deliveryFieldStack}>
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Peso estimado *</Text>
+                            <TextInput
+                              value={deliveryDraft.estimatedWeight}
+                              onChangeText={value => patchDeliveryDraft({ estimatedWeight: value })}
+                              placeholder="Ej. 3.5"
+                              placeholderTextColor={Theme.colors.textMuted}
+                              keyboardType="decimal-pad"
+                              selectionColor={Theme.colors.lime}
+                              style={styles.deliveryFieldInput}
+                            />
+                            <Text style={styles.deliveryFieldHint}>Ingresa el peso total aproximado en kilos.</Text>
+                          </View>
+
+                          <View>
+                            <Text style={styles.deliveryFieldLabel}>Tamano estimado *</Text>
+                            <View style={styles.deliverySizeGrid}>
+                              {DELIVERY_SIZE_OPTIONS.map(option => {
+                                const isActive = deliveryDraft.estimatedSize === option.id
+
+                                return (
+                                  <TouchableOpacity
+                                    key={option.id}
+                                    activeOpacity={0.88}
+                                    style={[styles.deliverySizeCard, isActive && styles.deliverySizeCardActive]}
+                                    onPress={() => patchDeliveryDraft({ estimatedSize: option.id })}
+                                  >
+                                    <Text style={[styles.deliverySizeTitle, isActive && styles.deliverySizeTitleActive]}>
+                                      {option.label}
                                     </Text>
-                                  </View>
+                                    <Text style={[styles.deliverySizeSubtitle, isActive && styles.deliverySizeSubtitleActive]}>
+                                      {option.subtitle}
+                                    </Text>
+                                  </TouchableOpacity>
+                                )
+                              })}
+                            </View>
+                          </View>
 
-                                  {typeof suggestion.distanceMeters === 'number' && (
-                                    <Text style={styles.suggestionDistance}>{formatDistance(suggestion.distanceMeters)}</Text>
-                                  )}
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Referencia adicional</Text>
+                            <TextInput
+                              value={deliveryDraft.deliveryAddress}
+                              onChangeText={value => patchDeliveryDraft({ deliveryAddress: value })}
+                              placeholder="Piso, dpto, local o una referencia visual"
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              multiline
+                              textAlignVertical="top"
+                              style={styles.deliveryFieldTextarea}
+                            />
+                          </View>
+
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Notas</Text>
+                            <TextInput
+                              value={deliveryDraft.notes}
+                              onChangeText={value => patchDeliveryDraft({ notes: value })}
+                              placeholder="Fragil, no volcar, contacto alternativo o instrucciones"
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              multiline
+                              textAlignVertical="top"
+                              style={styles.deliveryFieldTextarea}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                    )}
+
+                    {showDeliveryContactsStep && (
+                      <View style={styles.deliverySection}>
+                        <View style={styles.deliverySectionHeader}>
+                          <View style={styles.deliverySectionBadge}>
+                            <Ionicons name="call" size={15} color={Theme.colors.black} />
+                          </View>
+                          <View style={styles.deliverySectionCopy}>
+                            <Text style={styles.deliverySectionTitle}>Retiro y recepcion</Text>
+                            <Text style={styles.deliverySectionSubtitle}>
+                              Estos datos los usa el conductor para coordinar la entrega sin demoras.
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.deliveryWizardSummaryCard}>
+                          <View style={styles.deliveryWizardSummaryRow}>
+                            <Ionicons name="cube" size={15} color={Theme.colors.lime} />
+                            <Text style={styles.deliveryWizardSummaryText} numberOfLines={1}>
+                              {formatDeliveryWeight(deliveryDraft.estimatedWeight) || 'Peso pendiente'}
+                            </Text>
+                            <Text style={styles.deliveryWizardSummaryMeta}>{getDeliverySizeLabel(deliveryDraft.estimatedSize)}</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.deliveryFieldStack}>
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Fecha de envío (opcional)</Text>
+                            <TouchableOpacity
+                              activeOpacity={0.8}
+                              style={styles.datePickerButton}
+                              onPress={() => setShowDatePicker(true)}
+                            >
+                              <Ionicons name="calendar-outline" size={16} color={deliveryDraft.preferredDate ? Theme.colors.lime : Theme.colors.textMuted} />
+                              <Text style={[styles.datePickerButtonText, !!deliveryDraft.preferredDate && styles.datePickerButtonTextActive]}>
+                                {deliveryDraft.preferredDate
+                                  ? new Date(`${deliveryDraft.preferredDate}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })
+                                  : 'Seleccionar fecha'}
+                              </Text>
+                              {deliveryDraft.preferredDate && (
+                                <TouchableOpacity
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  onPress={() => patchDeliveryDraft({ preferredDate: null })}
+                                >
+                                  <Ionicons name="close-circle" size={16} color={Theme.colors.textMuted} />
                                 </TouchableOpacity>
-                              ))}
-                            </ScrollView>
-                          ) : (
-                            <Text style={styles.suggestionEmptyText}>No aparecieron sugerencias para esa busqueda todavia.</Text>
-                          )}
+                              )}
+                            </TouchableOpacity>
+                            {!deliveryDraft.preferredDate && (
+                              <Text style={styles.deliveryFieldHint}>Sin fecha: se busca conductor ahora</Text>
+                            )}
+                            {showDatePicker && (
+                              <>
+                                <Calendar
+                                  minDate={new Date().toISOString().split('T')[0]}
+                                  markedDates={deliveryDraft.preferredDate
+                                    ? { [deliveryDraft.preferredDate]: { selected: true, selectedColor: Theme.colors.lime } }
+                                    : {}}
+                                  onDayPress={day => {
+                                    patchDeliveryDraft({ preferredDate: day.dateString })
+                                    setShowDatePicker(false)
+                                  }}
+                                  theme={{
+                                    calendarBackground: Theme.colors.surfaceElevated,
+                                    dayTextColor: Theme.colors.text,
+                                    textDisabledColor: Theme.colors.textMuted,
+                                    monthTextColor: Theme.colors.text,
+                                    arrowColor: Theme.colors.lime,
+                                    todayTextColor: Theme.colors.lime,
+                                    selectedDayTextColor: Theme.colors.black,
+                                    selectedDayBackgroundColor: Theme.colors.lime,
+                                    textSectionTitleColor: Theme.colors.textMuted,
+                                  }}
+                                />
+                                <TouchableOpacity
+                                  style={styles.datePickerIosDone}
+                                  onPress={() => setShowDatePicker(false)}
+                                >
+                                  <Text style={styles.datePickerIosDoneText}>Cancelar</Text>
+                                </TouchableOpacity>
+                              </>
+                            )}
+                          </View>
+
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Dirección exacta de retiro *</Text>
+                            <TextInput
+                              value={deliveryDraft.pickupAddress}
+                              onChangeText={value => patchDeliveryDraft({ pickupAddress: value })}
+                              placeholder="Calle, número, piso/depto"
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              style={styles.deliveryFieldInput}
+                            />
+                          </View>
+
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Nombre contacto en origen *</Text>
+                            <TextInput
+                              value={deliveryDraft.pickupContactName}
+                              onChangeText={value => patchDeliveryDraft({ pickupContactName: value })}
+                              placeholder={user?.name ?? 'Tu nombre'}
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              style={styles.deliveryFieldInput}
+                            />
+                          </View>
+
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Telefono contacto en origen *</Text>
+                            <TextInput
+                              value={deliveryDraft.pickupContactPhone}
+                              onChangeText={value => patchDeliveryDraft({ pickupContactPhone: value })}
+                              placeholder={user?.phone ?? '11 1234-5678'}
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              keyboardType="phone-pad"
+                              style={styles.deliveryFieldInput}
+                            />
+                          </View>
+
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Datos de entrega *</Text>
+                            <TextInput
+                              value={deliveryDraft.deliveryDetails}
+                              onChangeText={value => patchDeliveryDraft({ deliveryDetails: value })}
+                              placeholder="Nombre, telefono, horario o datos de recepcion"
+                              placeholderTextColor={Theme.colors.textMuted}
+                              selectionColor={Theme.colors.lime}
+                              multiline
+                              textAlignVertical="top"
+                              style={styles.deliveryFieldTextarea}
+                            />
+                          </View>
+
+                          <TouchableOpacity
+                            activeOpacity={0.88}
+                            style={[
+                              styles.deliveryDeclarationRow,
+                              deliveryDraft.declarationAccepted && styles.deliveryDeclarationRowActive,
+                            ]}
+                            onPress={() => patchDeliveryDraft({ declarationAccepted: !deliveryDraft.declarationAccepted })}
+                          >
+                            <View
+                              style={[
+                                styles.deliveryDeclarationCheck,
+                                deliveryDraft.declarationAccepted && styles.deliveryDeclarationCheckActive,
+                              ]}
+                            >
+                              <Ionicons
+                                name={deliveryDraft.declarationAccepted ? 'checkmark' : 'add'}
+                                size={15}
+                                color={deliveryDraft.declarationAccepted ? Theme.colors.black : Theme.colors.textMuted}
+                              />
+                            </View>
+
+                            <View style={styles.deliveryDeclarationCopy}>
+                              <Text style={styles.deliveryDeclarationTitle}>Declaracion jurada *</Text>
+                              <Text style={styles.deliveryDeclarationText}>
+                                Confirmo que los datos son reales, el paquete no contiene elementos prohibidos y acepto las condiciones del servicio.
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
                         </View>
                       </View>
                     )}
                   </View>
 
-                  {isDeliveryMode && (
-                    <View style={styles.deliverySection}>
-                      <View style={styles.deliverySectionHeader}>
-                        <View style={styles.deliverySectionBadge}>
-                          <Ionicons name="cube" size={15} color={Theme.colors.black} />
-                        </View>
-                        <View style={styles.deliverySectionCopy}>
-                          <Text style={styles.deliverySectionTitle}>Datos de la entrega</Text>
-                          <Text style={styles.deliverySectionSubtitle}>
-                            Sumamos contexto del paquete antes de buscar quien lo lleva.
-                          </Text>
-                        </View>
-                      </View>
+                  {showDeliveryRouteStep && (
+                    <>
+                      <Text style={styles.quickPlacesTitle}>Lugares rapidos</Text>
 
-                      <View style={styles.deliveryFieldStack}>
-                        <View style={styles.deliveryFieldCard}>
-                          <Text style={styles.deliveryFieldLabel}>Peso estimado *</Text>
-                          <TextInput
-                            value={deliveryDraft.estimatedWeight}
-                            onChangeText={value => patchDeliveryDraft({ estimatedWeight: value })}
-                            placeholder="Ej. 3.5"
-                            placeholderTextColor={Theme.colors.textMuted}
-                            keyboardType="decimal-pad"
-                            selectionColor={Theme.colors.lime}
-                            style={styles.deliveryFieldInput}
-                          />
-                          <Text style={styles.deliveryFieldHint}>Ingresa el peso total aproximado en kilos.</Text>
-                        </View>
-
-                        <View>
-                          <Text style={styles.deliveryFieldLabel}>Tamano estimado *</Text>
-                          <View style={styles.deliverySizeGrid}>
-                            {DELIVERY_SIZE_OPTIONS.map(option => {
-                              const isActive = deliveryDraft.estimatedSize === option.id
-
-                              return (
-                                <TouchableOpacity
-                                  key={option.id}
-                                  activeOpacity={0.88}
-                                  style={[styles.deliverySizeCard, isActive && styles.deliverySizeCardActive]}
-                                  onPress={() => patchDeliveryDraft({ estimatedSize: option.id })}
-                                >
-                                  <Text style={[styles.deliverySizeTitle, isActive && styles.deliverySizeTitleActive]}>
-                                    {option.label}
-                                  </Text>
-                                  <Text style={[styles.deliverySizeSubtitle, isActive && styles.deliverySizeSubtitleActive]}>
-                                    {option.subtitle}
-                                  </Text>
-                                </TouchableOpacity>
-                              )
-                            })}
-                          </View>
-                        </View>
-
-                        <View style={styles.deliveryFieldCard}>
-                          <Text style={styles.deliveryFieldLabel}>Referencia adicional</Text>
-                          <TextInput
-                            value={deliveryDraft.deliveryAddress}
-                            onChangeText={value => patchDeliveryDraft({ deliveryAddress: value })}
-                            placeholder="Piso, dpto, local o una referencia visual"
-                            placeholderTextColor={Theme.colors.textMuted}
-                            selectionColor={Theme.colors.lime}
-                            multiline
-                            textAlignVertical="top"
-                            style={styles.deliveryFieldTextarea}
-                          />
-                        </View>
-
-                        <View style={styles.deliveryFieldCard}>
-                          <Text style={styles.deliveryFieldLabel}>Datos de entrega *</Text>
-                          <TextInput
-                            value={deliveryDraft.deliveryDetails}
-                            onChangeText={value => patchDeliveryDraft({ deliveryDetails: value })}
-                            placeholder="Nombre, telefono, horario o datos de recepcion"
-                            placeholderTextColor={Theme.colors.textMuted}
-                            selectionColor={Theme.colors.lime}
-                            multiline
-                            textAlignVertical="top"
-                            style={styles.deliveryFieldTextarea}
-                          />
-                        </View>
-
-                        <View style={styles.deliveryFieldCard}>
-                          <Text style={styles.deliveryFieldLabel}>Notas</Text>
-                          <TextInput
-                            value={deliveryDraft.notes}
-                            onChangeText={value => patchDeliveryDraft({ notes: value })}
-                            placeholder="Fragil, no volcar, contacto alternativo o instrucciones"
-                            placeholderTextColor={Theme.colors.textMuted}
-                            selectionColor={Theme.colors.lime}
-                            multiline
-                            textAlignVertical="top"
-                            style={styles.deliveryFieldTextarea}
-                          />
-                        </View>
-
-                        <TouchableOpacity
-                          activeOpacity={0.88}
-                          style={[
-                            styles.deliveryDeclarationRow,
-                            deliveryDraft.declarationAccepted && styles.deliveryDeclarationRowActive,
-                          ]}
-                          onPress={() => patchDeliveryDraft({ declarationAccepted: !deliveryDraft.declarationAccepted })}
-                        >
-                          <View
-                            style={[
-                              styles.deliveryDeclarationCheck,
-                              deliveryDraft.declarationAccepted && styles.deliveryDeclarationCheckActive,
-                            ]}
-                          >
-                            <Ionicons
-                              name={deliveryDraft.declarationAccepted ? 'checkmark' : 'add'}
-                              size={15}
-                              color={deliveryDraft.declarationAccepted ? Theme.colors.black : Theme.colors.textMuted}
-                            />
-                          </View>
-
-                          <View style={styles.deliveryDeclarationCopy}>
-                            <Text style={styles.deliveryDeclarationTitle}>Declaracion jurada *</Text>
-                            <Text style={styles.deliveryDeclarationText}>
-                              Confirmo que los datos son reales, el paquete no contiene elementos prohibidos y acepto las condiciones del servicio.
-                            </Text>
-                          </View>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
-
-                  <Text style={styles.quickPlacesTitle}>Lugares rapidos</Text>
-
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.quickPlacesRow}
-                  >
-                    {QUICK_DESTINATIONS.map(place => (
-                      <TouchableOpacity
-                        key={place.id}
-                        activeOpacity={0.86}
-                        style={styles.quickPlaceChip}
-                        onPress={() => {
-                          setDestinationSelection(null)
-                          setDestinationInput(place.label)
-                        }}
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.quickPlacesRow}
                       >
-                        <Ionicons name="location-outline" size={14} color={Theme.colors.textMuted} />
-                        <Text style={styles.quickPlaceChipText}>{place.label}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
+                        {QUICK_DESTINATIONS.map(place => (
+                          <TouchableOpacity
+                            key={place.id}
+                            activeOpacity={0.86}
+                            style={styles.quickPlaceChip}
+                            onPress={() => {
+                              setDestinationSelection(null)
+                              setDestinationInput(place.label)
+                              setDeliveryFormError(null)
+                            }}
+                          >
+                            <Ionicons name="location-outline" size={14} color={Theme.colors.textMuted} />
+                            <Text style={styles.quickPlaceChipText}>{place.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </>
+                  )}
 
                   {(deliveryFormError || (serviceMessage && searchStage === 'editing')) && (
                     <View style={styles.composerNotice}>
@@ -1958,29 +2344,76 @@ export default function AppHomeScreen() {
                     </View>
                   )}
 
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    style={[
-                      styles.submitRouteButton,
-                      (!destinationInput.trim() || routeLoading) && styles.submitRouteButtonDisabled,
-                    ]}
-                    disabled={!destinationInput.trim() || routeLoading}
-                    onPress={() => void submitSearch()}
-                  >
-                    {routeLoading ? (
-                      <ActivityIndicator color={Theme.colors.black} size="small" />
-                    ) : (
-                      <>
-                        <Ionicons name="navigate-circle" size={18} color={Theme.colors.black} />
-                        <Text style={styles.submitRouteButtonText}>{submitRouteLabel}</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </ScrollView>
-              </Animated.View>
+                  {isDeliveryMode && canGoBackInWizard ? (
+                    <View style={styles.deliveryWizardActionRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.88}
+                        style={styles.deliveryWizardBackButton}
+                        onPress={goToPreviousDeliveryWizardStep}
+                        disabled={routeLoading}
+                      >
+                        <Ionicons name="arrow-back" size={16} color={Theme.colors.text} />
+                        <Text style={styles.deliveryWizardBackButtonText}>Atras</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.88}
+                        style={[
+                          styles.submitRouteButton,
+                          styles.deliveryWizardPrimaryAction,
+                          submitRouteDisabled && styles.submitRouteButtonDisabled,
+                        ]}
+                        disabled={submitRouteDisabled}
+                        onPress={handleDeliveryWizardNextStep}
+                      >
+                        {routeLoading ? (
+                          <ActivityIndicator color={Theme.colors.black} size="small" />
+                        ) : (
+                          <>
+                            <Ionicons
+                              name={deliveryWizardStep === 'contacts' ? 'navigate-circle' : 'arrow-forward-circle'}
+                              size={18}
+                              color={Theme.colors.black}
+                            />
+                            <Text style={styles.submitRouteButtonText}>{submitRouteLabel}</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      style={[
+                        styles.submitRouteButton,
+                        submitRouteDisabled && styles.submitRouteButtonDisabled,
+                      ]}
+                      disabled={submitRouteDisabled}
+                      onPress={() => {
+                        if (isDeliveryMode) {
+                          handleDeliveryWizardNextStep()
+                          return
+                        }
+                        void submitSearch()
+                      }}
+                    >
+                      {routeLoading ? (
+                        <ActivityIndicator color={Theme.colors.black} size="small" />
+                      ) : (
+                        <>
+                          <Ionicons
+                            name={isDeliveryMode ? 'arrow-forward-circle' : 'navigate-circle'}
+                            size={18}
+                            color={Theme.colors.black}
+                          />
+                          <Text style={styles.submitRouteButtonText}>{submitRouteLabel}</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
+              </ScrollView>
             </KeyboardAvoidingView>
-          </Animated.View>
-        )}
+          </View>
+        </Modal>
       </View>
 
       <AppDrawer
@@ -2239,41 +2672,44 @@ const styles = StyleSheet.create({
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },
-  searchOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 80,
-    elevation: 80,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-  },
-  searchOverlayKeyboard: {
+  // ── Wizard screen (full-screen modal) ───────────────────────────────────────
+  wizardScreen: {
     flex: 1,
-    paddingHorizontal: 16,
-  },
-  searchComposerCard: {
-    borderRadius: 24,
-    padding: 18,
     backgroundColor: Theme.colors.background,
+  },
+  wizardScreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.colors.borderSoft,
+  },
+  wizardBackBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.surface,
     borderWidth: 1,
     borderColor: Theme.colors.border,
   },
-  searchComposerContent: {
-    paddingBottom: 6,
-  },
-  searchComposerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  searchComposerTitle: {
+  wizardHeaderTitle: {
+    flex: 1,
     color: Theme.colors.text,
     fontFamily: Theme.fonts.bold,
-    fontSize: 20,
+    fontSize: 18,
   },
-  searchComposerClose: {
+  wizardHeaderSpacer: {
     width: 40,
-    height: 40,
-    borderRadius: 20,
+  },
+  wizardContent: {
+    paddingHorizontal: 18,
+    paddingTop: 20,
+    paddingBottom: 32,
+    gap: 16,
   },
   searchFieldsArea: {
     position: 'relative',
@@ -2281,6 +2717,82 @@ const styles = StyleSheet.create({
   },
   routeInputsStack: {
     gap: 10,
+  },
+  routeStepArea: {
+    position: 'relative',
+    zIndex: 10,
+  },
+  deliveryWizardProgressRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  deliveryWizardProgressPill: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  deliveryWizardProgressPillActive: {
+    backgroundColor: '#242c15',
+    borderColor: Theme.colors.lime,
+  },
+  deliveryWizardProgressPillDone: {
+    borderColor: Theme.colors.lime,
+  },
+  deliveryWizardProgressStep: {
+    color: Theme.colors.textSubtle,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 10,
+  },
+  deliveryWizardProgressStepActive: {
+    color: Theme.colors.lime,
+  },
+  deliveryWizardProgressStepDone: {
+    color: Theme.colors.lime,
+  },
+  deliveryWizardProgressText: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  deliveryWizardProgressTextActive: {
+    color: Theme.colors.lime,
+  },
+  deliveryWizardProgressTextDone: {
+    color: Theme.colors.text,
+  },
+  deliveryWizardIntroCard: {
+    marginBottom: 18,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: Theme.colors.surface,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  deliveryWizardStepEyebrow: {
+    color: Theme.colors.lime,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 11,
+  },
+  deliveryWizardStepTitle: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 16,
+    marginTop: 6,
+  },
+  deliveryWizardStepText: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
   },
   suggestionsPopover: {
     position: 'absolute',
@@ -2334,6 +2846,30 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginTop: 4,
   },
+  deliveryWizardSummaryCard: {
+    minHeight: 42,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 14,
+    backgroundColor: Theme.colors.backgroundDeep,
+  },
+  deliveryWizardSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deliveryWizardSummaryText: {
+    flex: 1,
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
+  },
+  deliveryWizardSummaryMeta: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 11,
+  },
   deliveryFieldStack: {
     gap: 12,
   },
@@ -2370,6 +2906,40 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     paddingVertical: 0,
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: Theme.colors.backgroundDeep,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  datePickerButtonText: {
+    flex: 1,
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.body,
+    fontSize: 14,
+  },
+  datePickerButtonTextActive: {
+    color: Theme.colors.text,
+  },
+  datePickerIosDone: {
+    alignSelf: 'flex-end',
+    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: Theme.colors.lime,
+  },
+  datePickerIosDoneText: {
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 14,
   },
   deliverySizeGrid: {
     flexDirection: 'row',
@@ -2613,6 +3183,32 @@ const styles = StyleSheet.create({
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },
+  deliveryWizardActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  deliveryWizardBackButton: {
+    height: 50,
+    marginTop: 18,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  deliveryWizardBackButtonText: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 14,
+  },
+  deliveryWizardPrimaryAction: {
+    flex: 1,
+  },
   resultsTopWrap: {
     position: 'absolute',
     left: 16,
@@ -2712,7 +3308,183 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
   },
-  deliverySummaryCard: {
+  trackingPanel: {
+    padding: 16,
+    borderRadius: 20,
+    marginBottom: 10,
+    backgroundColor: Theme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  trackingPanelAccepted: {
+    backgroundColor: '#161F16',
+    borderColor: 'rgba(68,208,123,0.25)',
+  },
+  trackingPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  trackingPulseWrap: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  trackingPulseRing: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 2,
+    borderColor: Theme.colors.lime,
+  },
+  trackingPulseCore: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: Theme.colors.lime,
+  },
+  trackingPanelCopy: {
+    flex: 1,
+  },
+  trackingPanelEyebrow: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  trackingPanelEyebrowSuccess: {
+    color: Theme.colors.success,
+  },
+  trackingPanelTitle: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 14,
+    marginTop: 3,
+    lineHeight: 19,
+  },
+  trackingDivider: {
+    height: 1,
+    backgroundColor: Theme.colors.border,
+    marginVertical: 14,
+  },
+  trackingChipRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  trackingChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: Theme.colors.backgroundDeep,
+  },
+  trackingChipText: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
+  },
+  trackingGhostBtn: {
+    marginTop: 12,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  trackingGhostBtnText: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 13,
+  },
+  trackingDriverAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.lime,
+  },
+  trackingDriverAvatarText: {
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 20,
+  },
+  trackingDriverName: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 15,
+    marginTop: 2,
+  },
+  trackingDriverRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  trackingDriverRatingText: {
+    color: Theme.colors.lime,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 12,
+  },
+  trackingDriverRatingCount: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 11,
+  },
+  trackingPhoneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: Theme.colors.lime,
+  },
+  trackingPhoneBtnText: {
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 12,
+  },
+  trackingNoCoverageTop: {
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  trackingNoCoverageTitle: {
+    color: Theme.colors.text,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 15,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  trackingNoCoverageBody: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.medium,
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  trackingPrimaryBtn: {
+    marginTop: 16,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.lime,
+  },
+  trackingPrimaryBtnText: {
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 14,
+  },
+  deliveryRouteCard: {
     padding: 14,
     borderRadius: 18,
     marginBottom: 12,
@@ -2720,64 +3492,52 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Theme.colors.border,
   },
-  deliverySummaryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  deliverySummaryIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
-  },
-  deliverySummaryCopy: {
-    flex: 1,
-  },
-  deliverySummaryTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 13,
-  },
-  deliverySummarySubtitle: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    marginTop: 3,
-  },
-  deliverySummaryMetaRow: {
-    marginTop: 12,
-    marginBottom: 10,
-  },
-  deliverySummaryPill: {
-    minHeight: 34,
-    borderRadius: 17,
-    paddingHorizontal: 12,
+  deliveryRouteRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: Theme.colors.backgroundDeep,
   },
-  deliverySummaryPillText: {
+  deliveryRouteDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Theme.colors.textMuted,
+    marginHorizontal: 3,
+  },
+  deliveryRouteLine: {
+    width: 1,
+    height: 14,
+    backgroundColor: Theme.colors.border,
+    marginLeft: 6,
+    marginVertical: 3,
+  },
+  deliveryRouteLabel: {
     flex: 1,
     color: Theme.colors.text,
-    fontFamily: Theme.fonts.semiBold,
-    fontSize: 11,
-  },
-  deliverySummaryDetailLabel: {
-    color: Theme.colors.textSubtle,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 10,
-    marginTop: 8,
-  },
-  deliverySummaryDetailText: {
-    color: Theme.colors.text,
     fontFamily: Theme.fonts.medium,
+    fontSize: 13,
+  },
+  deliveryRouteMeta: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
-    lineHeight: 17,
-    marginTop: 3,
+  },
+  deliveryStartBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    height: 52,
+    borderRadius: 16,
+    marginBottom: 4,
+    backgroundColor: Theme.colors.lime,
+  },
+  deliveryStartBtnText: {
+    flex: 1,
+    color: Theme.colors.black,
+    fontFamily: Theme.fonts.bold,
+    fontSize: 16,
+    textAlign: 'center',
   },
   promoRow: {
     minHeight: 42,
@@ -2928,238 +3688,5 @@ const styles = StyleSheet.create({
     color: Theme.colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
-  },
-  deliveryTrackingHeroCard: {
-    padding: 14,
-    borderRadius: 18,
-    marginBottom: 12,
-    backgroundColor: '#232c13',
-    borderWidth: 1,
-    borderColor: 'rgba(184,255,0,0.3)',
-  },
-  deliveryTrackingHeroRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  deliveryTrackingHeroIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
-  },
-  deliveryTrackingHeroIconAccepted: {
-    backgroundColor: Theme.colors.success,
-  },
-  deliveryTrackingHeroCopy: {
-    flex: 1,
-  },
-  deliveryTrackingHeroEyebrow: {
-    color: Theme.colors.limeSoft,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 10,
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  deliveryTrackingHeroTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 16,
-    marginTop: 3,
-  },
-  deliveryTrackingHeroText: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 6,
-  },
-  deliveryTrackingBadge: {
-    minWidth: 58,
-    height: 30,
-    borderRadius: 15,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  deliveryTrackingBadgeActive: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
-  },
-  deliveryTrackingBadgeText: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 11,
-  },
-  deliveryTrackingBadgeTextActive: {
-    color: Theme.colors.black,
-  },
-  deliveryTrackingMetaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
-  },
-  deliveryTrackingMetaPill: {
-    minHeight: 32,
-    borderRadius: 16,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Theme.colors.backgroundDeep,
-  },
-  deliveryTrackingMetaText: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.semiBold,
-    fontSize: 11,
-  },
-  deliveryTrackingStepsCard: {
-    padding: 14,
-    borderRadius: 18,
-    marginBottom: 12,
-    backgroundColor: Theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
-    gap: 12,
-  },
-  deliveryTrackingStepRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  deliveryTrackingStepIndicator: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
-  },
-  deliveryTrackingStepIndicatorDone: {
-    backgroundColor: Theme.colors.success,
-    borderColor: Theme.colors.success,
-  },
-  deliveryTrackingStepIndicatorActive: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
-  },
-  deliveryTrackingStepCopy: {
-    flex: 1,
-    paddingTop: 2,
-  },
-  deliveryTrackingStepTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 12,
-  },
-  deliveryTrackingStepText: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 4,
-  },
-  deliveryTrackingHintCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: '#18211B',
-    borderWidth: 1,
-    borderColor: 'rgba(68,208,123,0.2)',
-  },
-  deliveryTrackingHintText: {
-    flex: 1,
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  deliveryDriverCard: {
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: Theme.colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: 'rgba(68,208,123,0.3)',
-  },
-  deliveryDriverHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  deliveryDriverAvatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
-  },
-  deliveryDriverCopy: {
-    flex: 1,
-  },
-  deliveryDriverName: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 15,
-  },
-  deliveryDriverSubtitle: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    marginTop: 3,
-  },
-  deliveryDriverRatingBadge: {
-    minHeight: 28,
-    borderRadius: 14,
-    paddingHorizontal: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Theme.colors.lime,
-  },
-  deliveryDriverRatingText: {
-    color: Theme.colors.black,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 11,
-  },
-  deliveryDriverMetaRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-  },
-  deliveryDriverMetaCard: {
-    flex: 1,
-    borderRadius: 14,
-    padding: 12,
-    backgroundColor: Theme.colors.backgroundDeep,
-  },
-  deliveryDriverMetaLabel: {
-    color: Theme.colors.textSubtle,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 10,
-    textTransform: 'uppercase',
-  },
-  deliveryDriverMetaValue: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 12,
-    marginTop: 5,
-  },
-  deliveryDriverNote: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 12,
   },
 })

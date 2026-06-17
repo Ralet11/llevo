@@ -20,6 +20,7 @@ export type RoutePreview = {
     placeId: string
     label: string
     formattedAddress: string
+    city: string | null
     location: {
       latitude: number
       longitude: number
@@ -29,6 +30,7 @@ export type RoutePreview = {
     placeId: string
     label: string
     formattedAddress: string
+    city: string | null
     location: {
       latitude: number
       longitude: number
@@ -71,12 +73,14 @@ export async function autocompletePlaces(params: {
   latitude?: number
   longitude?: number
   sessionToken?: string
+  citiesOnly?: boolean
 }) {
   const query = buildQuery({
     input: params.input,
     latitude: params.latitude,
     longitude: params.longitude,
     sessionToken: params.sessionToken,
+    citiesOnly: params.citiesOnly ? 'true' : undefined,
   })
 
   const response = await fetch(`${BASE_URL}/maps/places/autocomplete?${query}`)

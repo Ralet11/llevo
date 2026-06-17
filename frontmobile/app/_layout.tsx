@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
-import { View, ActivityIndicator } from 'react-native'
+import { View, ActivityIndicator, Platform } from 'react-native'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFonts } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
+import * as Notifications from 'expo-notifications'
 import {
   Manrope_400Regular,
   Manrope_500Medium,
@@ -14,16 +15,47 @@ import {
 } from '@expo-google-fonts/manrope'
 import { SpaceGrotesk_700Bold } from '@expo-google-fonts/space-grotesk'
 import { AuthProvider, useAuth } from '../lib/auth'
+import { api } from '../lib/api'
 import { Colors } from '../constants/colors'
 import { Theme } from '../constants/theme'
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+})
+
 SplashScreen.preventAutoHideAsync().catch(() => {})
 
+async function registerPushToken(token: string) {
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+    })
+  }
+  const { status } = await Notifications.requestPermissionsAsync()
+  if (status !== 'granted') return
+
+  const pushToken = await Notifications.getExpoPushTokenAsync()
+  await api.post('/auth/push-token', { pushToken: pushToken.data }, token).catch(() => {})
+}
+
 function RootNavigator() {
-  const { user, isLoading } = useAuth()
+  const { user, token, isLoading } = useAuth()
   const segments = useSegments()
   const router   = useRouter()
   const insets   = useSafeAreaInsets()
+
+  useEffect(() => {
+    if (user && token) {
+      registerPushToken(token).catch(() => {})
+    }
+  }, [user, token])
 
   useEffect(() => {
     if (isLoading) return

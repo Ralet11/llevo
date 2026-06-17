@@ -7,6 +7,7 @@ const autocompleteQuerySchema = z.object({
   latitude: z.coerce.number().optional(),
   longitude: z.coerce.number().optional(),
   sessionToken: z.string().trim().optional(),
+  citiesOnly: z.enum(['true', 'false']).transform(v => v === 'true').optional(),
 })
 
 const waypointSchema = z.object({
@@ -26,7 +27,13 @@ const routePreviewSchema = z.object({
 export async function placesAutocomplete(req: Request, res: Response, next: NextFunction) {
   try {
     const query = autocompleteQuerySchema.parse(req.query)
-    const suggestions = await autocompletePlaces(query)
+    const suggestions = await autocompletePlaces({
+      input: query.input,
+      latitude: query.latitude,
+      longitude: query.longitude,
+      sessionToken: query.sessionToken,
+      citiesOnly: query.citiesOnly,
+    })
     res.json({ suggestions })
   } catch (error) {
     next(error)
