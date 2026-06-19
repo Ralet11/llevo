@@ -6,14 +6,18 @@ import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
 import { IconButton } from '../../components/ui/IconButton'
 import { Input } from '../../components/ui/Input'
+import { PhoneField } from '../../components/ui/PhoneField'
+import { COUNTRIES, DEFAULT_COUNTRY_ISO2, findCountry, type Country } from '../../constants/countries'
 import { Theme } from '../../constants/theme'
+import { toE164 } from '../../lib/phone'
 import { useAuth } from '../../lib/auth'
 
 export default function RegisterScreen() {
   const { registerWithPhone, sendPhoneCode } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
+  const [country, setCountry] = useState<Country>(() => findCountry(DEFAULT_COUNTRY_ISO2) ?? COUNTRIES[0])
+  const [nationalPhone, setNationalPhone] = useState('')
   const [code, setCode] = useState('')
   const [codeSent, setCodeSent] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -21,8 +25,13 @@ export default function RegisterScreen() {
   const [info, setInfo] = useState('')
 
   async function handleSendCode() {
-    if (!name.trim() || !phone.trim()) {
-      setError('Completa nombre y telefono')
+    if (!name.trim()) {
+      setError('Completá tu nombre')
+      return
+    }
+    const e164 = toE164(nationalPhone, country.iso2)
+    if (!e164) {
+      setError('Ingresá un teléfono válido')
       return
     }
 
@@ -30,7 +39,7 @@ export default function RegisterScreen() {
     setInfo('')
     setLoading(true)
     try {
-      await sendPhoneCode(phone, 'register')
+      await sendPhoneCode(e164, 'register')
       setCodeSent(true)
       setInfo('Te enviamos un codigo para confirmar tu telefono.')
     } catch (requestError) {
@@ -41,8 +50,13 @@ export default function RegisterScreen() {
   }
 
   async function handleRegister() {
-    if (!name.trim() || !phone.trim()) {
-      setError('Completa nombre y telefono')
+    if (!name.trim()) {
+      setError('Completá tu nombre')
+      return
+    }
+    const e164 = toE164(nationalPhone, country.iso2)
+    if (!e164) {
+      setError('Ingresá un teléfono válido')
       return
     }
 
@@ -62,7 +76,7 @@ export default function RegisterScreen() {
     try {
       await registerWithPhone({
         name,
-        phone,
+        phone: e164,
         code,
         email: email.trim() || undefined,
       })
@@ -77,7 +91,7 @@ export default function RegisterScreen() {
     <ScreenSafeArea style={styles.container}>
       <View style={styles.header}>
         <IconButton name="chevron-back" onPress={() => router.replace('/onboarding')} />
-        <Text style={styles.headerTitle}>Crear cuenta</Text>
+        <Text style={styles.headerTitle}>Crear cuenta con telefono</Text>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -95,13 +109,16 @@ export default function RegisterScreen() {
 
           <View style={styles.formCard}>
             <Input label="Nombre completo" value={name} onChangeText={setName} placeholder="Juan Perez" />
-            <Input
-              label="Telefono"
-              value={phone}
-              onChangeText={setPhone}
-              placeholder="+5491112345678"
-              keyboardType="phone-pad"
-              autoCapitalize="none"
+            <PhoneField
+              label="Teléfono"
+              country={country}
+              onChangeCountry={setCountry}
+              national={nationalPhone}
+              onChangeNational={value => {
+                setNationalPhone(value)
+                setError('')
+                setInfo('')
+              }}
             />
             <Input
               label="Correo electronico (opcional)"

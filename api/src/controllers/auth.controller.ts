@@ -2,12 +2,21 @@ import { Request, Response, NextFunction } from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { z } from 'zod'
+import { OAuth2Client } from 'google-auth-library'
 import { Expo } from 'expo-server-sdk'
 import prisma from '../lib/prisma'
 import { publicUserSelect } from '../lib/publicUser'
 import { normalizePhoneNumber } from '../lib/phone'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
+import {
+  buildNameFromEmail,
+  consumeEmailAuthCode,
+  createEmailAuthCode,
+  getEmailAuthDevCode,
+  sendEmailAuthCode,
+  verifyEmailAuthCode,
+} from '../services/emailAuth'
 import { checkPhoneVerificationCode, sendPhoneVerificationCode } from '../services/twilioVerify'
 
 const registerSchema = z.object({
@@ -20,6 +29,21 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string(),
+})
+
+const emailAuthStartSchema = z.object({
+  email: z.string().email(),
+})
+
+const emailAuthVerifySchema = z.object({
+  email: z.string().email(),
+  code: z.string().trim().min(4).max(10),
+})
+
+const emailAuthSetPasswordSchema = z.object({
+  email: z.string().email(),
+  code: z.string().trim().min(4).max(10),
+  password: z.string().min(6),
 })
 
 const sendPhoneCodeSchema = z.object({
@@ -39,10 +63,30 @@ const loginWithPhoneSchema = z.object({
   code: z.string().trim().min(4).max(10),
 })
 
+const googleAuthSchema = z.object({
+  idToken: z.string().min(10),
+})
+
+// Acepta uno o varios client IDs (web/android/ios) separados por coma. Son la
+// "audiencia" valida del id_token. Se cargan por env, sin hardcodear secretos.
+function getGoogleClientIds(): string[] {
+  const raw = process.env.GOOGLE_OAUTH_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || ''
+  return raw
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+}
+
+const googleClient = new OAuth2Client()
+
 function signToken(userId: string): string {
   return jwt.sign({ userId }, process.env.JWT_SECRET!, {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   } as jwt.SignOptions)
+}
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase()
 }
 
 async function buildAuthResponse(userId: string) {
@@ -53,6 +97,44 @@ async function buildAuthResponse(userId: string) {
 
   if (!user) throw new AppError('Usuario no encontrado', 404)
   return { user, token: signToken(user.id) }
+}
+
+export async function loginWithGoogle(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { idToken } = googleAuthSchema.parse(req.body)
+
+    const audience = getGoogleClientIds()
+    if (audience.length === 0) {
+      throw new AppError('Google OAuth no esta configurado en el servidor', 500)
+    }
+
+    const ticket = await googleClient.verifyIdToken({ idToken, audience })
+    const payload = ticket.getPayload()
+    if (!payload?.email || !payload.email_verified) {
+      throw new AppError('No pudimos validar tu cuenta de Google', 401)
+    }
+
+    const email = normalizeEmail(payload.email)
+
+    // Match por email: si ya existe (alta por email/telefono), reusa la cuenta;
+    // si no, crea una nueva ya verificada (Google confirma el email).
+    let user = await prisma.user.findUnique({ where: { email }, select: publicUserSelect })
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          name: payload.name?.trim() || buildNameFromEmail(email),
+          email,
+          avatarUrl: payload.picture || undefined,
+          isVerified: true,
+        },
+        select: publicUserSelect,
+      })
+    }
+
+    res.json({ user, token: signToken(user.id) })
+  } catch (err) {
+    next(err)
+  }
 }
 
 async function ensureEmailAndPhoneAreAvailable(email?: string, phone?: string) {
@@ -100,6 +182,77 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     if (!valid) throw new AppError('Credenciales invalidas', 401)
 
     res.json(await buildAuthResponse(user.id))
+  } catch (err) {
+    next(err)
+  }
+}
+
+export async function startEmailAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const data = emailAuthStartSchema.parse(req.body)
+    const email = normalizeEmail(data.email)
+    const user = await prisma.user.findUnique({ where: { email } })
+
+    if (user?.passwordHash) {
+      res.json({ nextStep: 'password' as const })
+      return
+    }
+
+    const { code } = await createEmailAuthCode(email, user?.id)
+    await sendEmailAuthCode(email, code)
+
+    res.json({
+      nextStep: 'code' as const,
+      devCode: getEmailAuthDevCode(code),
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export async function verifyEmailCode(req: Request, res: Response, next: NextFunction) {
+  try {
+    const data = emailAuthVerifySchema.parse(req.body)
+    const record = await verifyEmailAuthCode(data.email, data.code)
+    if (!record) throw new AppError('Codigo invalido o vencido', 401)
+
+    res.json({ ok: true })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export async function setEmailPassword(req: Request, res: Response, next: NextFunction) {
+  try {
+    const data = emailAuthSetPasswordSchema.parse(req.body)
+    const email = normalizeEmail(data.email)
+    const record = await verifyEmailAuthCode(email, data.code)
+    if (!record) throw new AppError('Codigo invalido o vencido', 401)
+
+    const passwordHash = await bcrypt.hash(data.password, 10)
+    const existingUser = await prisma.user.findUnique({ where: { email } })
+
+    if (existingUser?.passwordHash) {
+      throw new AppError('Esta cuenta ya tiene contrasena configurada', 409)
+    }
+
+    const user = existingUser
+      ? await prisma.user.update({
+          where: { id: existingUser.id },
+          data: { passwordHash },
+          select: publicUserSelect,
+        })
+      : await prisma.user.create({
+          data: {
+            email,
+            passwordHash,
+            name: buildNameFromEmail(email),
+          },
+          select: publicUserSelect,
+        })
+
+    await consumeEmailAuthCode(record.id)
+    res.json({ user, token: signToken(user.id) })
   } catch (err) {
     next(err)
   }

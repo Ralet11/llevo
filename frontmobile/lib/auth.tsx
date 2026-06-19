@@ -45,6 +45,11 @@ export type DriverProfile = {
 
 type PhoneCodeIntent = 'login' | 'register'
 
+type EmailAuthStartResponse = {
+  nextStep: 'password' | 'code'
+  devCode?: string
+}
+
 type PhoneRegisterData = {
   name: string
   phone: string
@@ -86,9 +91,13 @@ type AuthContextType = {
   driverProfile: DriverProfile | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
+  startEmailAuth: (email: string) => Promise<EmailAuthStartResponse>
+  verifyEmailCode: (email: string, code: string) => Promise<void>
+  setEmailPassword: (email: string, code: string, password: string) => Promise<void>
   register: (data: LegacyRegisterData) => Promise<void>
   sendPhoneCode: (phone: string, intent: PhoneCodeIntent) => Promise<void>
   loginWithPhone: (phone: string, code: string) => Promise<void>
+  loginWithGoogle: (idToken: string) => Promise<void>
   registerWithPhone: (data: PhoneRegisterData) => Promise<void>
   refreshSession: () => Promise<User | null>
   startDriverVerification: (callbackUrl: string) => Promise<DriverVerificationSession>
@@ -243,6 +252,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await persistSession(response.token, normalizeUser(response.user))
   }
 
+  async function startEmailAuth(email: string) {
+    return api.post<EmailAuthStartResponse>('/auth/email/start', { email })
+  }
+
+  async function verifyEmailCode(email: string, code: string) {
+    await api.post('/auth/email/verify-code', { email, code })
+  }
+
+  async function setEmailPassword(email: string, code: string, password: string) {
+    const response = await api.post<AuthResponse>('/auth/email/set-password', { email, code, password })
+    await persistSession(response.token, normalizeUser(response.user))
+  }
+
   async function register(data: LegacyRegisterData) {
     const response = await api.post<AuthResponse>('/auth/register', data)
     const meResponse = await api.get<MeResponse>('/auth/me', response.token)
@@ -255,6 +277,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function loginWithPhone(phone: string, code: string) {
     const response = await api.post<AuthResponse>('/auth/phone/login', { phone, code })
+    await persistSession(response.token, normalizeUser(response.user))
+  }
+
+  async function loginWithGoogle(idToken: string) {
+    const response = await api.post<AuthResponse>('/auth/google', { idToken })
     await persistSession(response.token, normalizeUser(response.user))
   }
 
@@ -311,9 +338,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         driverProfile,
         isLoading,
         login,
+        startEmailAuth,
+        verifyEmailCode,
+        setEmailPassword,
         register,
         sendPhoneCode,
         loginWithPhone,
+        loginWithGoogle,
         registerWithPhone,
         refreshSession,
         startDriverVerification,

@@ -6,26 +6,57 @@ import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
 import { IconButton } from '../../components/ui/IconButton'
 import { Input } from '../../components/ui/Input'
+import { PhoneField } from '../../components/ui/PhoneField'
+import { COUNTRIES, DEFAULT_COUNTRY_ISO2, findCountry, type Country } from '../../constants/countries'
 import { Theme } from '../../constants/theme'
+import { toE164 } from '../../lib/phone'
 import { useAuth } from '../../lib/auth'
 
 type LoginMethod = 'phone' | 'email'
+type EmailStep = 'email' | 'password' | 'code' | 'setPassword'
 
 export default function LoginScreen() {
-  const { login, sendPhoneCode, loginWithPhone } = useAuth()
+  const { login, sendPhoneCode, loginWithPhone, startEmailAuth, verifyEmailCode, setEmailPassword } = useAuth()
   const [method, setMethod] = useState<LoginMethod>('phone')
-  const [phone, setPhone] = useState('')
+  const [country, setCountry] = useState<Country>(() => findCountry(DEFAULT_COUNTRY_ISO2) ?? COUNTRIES[0])
+  const [nationalPhone, setNationalPhone] = useState('')
   const [code, setCode] = useState('')
   const [codeSent, setCodeSent] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [emailStep, setEmailStep] = useState<EmailStep>('email')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
 
+  function resetEmailFlow(nextEmail = '') {
+    setEmail(nextEmail)
+    setPassword('')
+    setConfirmPassword('')
+    setCode('')
+    setEmailStep('email')
+  }
+
+  function switchMethod(nextMethod: LoginMethod) {
+    setMethod(nextMethod)
+    setError('')
+    setInfo('')
+
+    if (nextMethod === 'phone') {
+      resetEmailFlow(email)
+      return
+    }
+
+    setNationalPhone('')
+    setCode('')
+    setCodeSent(false)
+  }
+
   async function handlePhoneCodeRequest() {
-    if (!phone.trim()) {
-      setError('Completa tu telefono')
+    const e164 = toE164(nationalPhone, country.iso2)
+    if (!e164) {
+      setError('Ingresá un teléfono válido')
       return
     }
 
@@ -33,37 +64,32 @@ export default function LoginScreen() {
     setInfo('')
     setLoading(true)
     try {
-      await sendPhoneCode(phone, 'login')
+      await sendPhoneCode(e164, 'login')
       setCodeSent(true)
-      setInfo('Te enviamos un codigo por SMS.')
+      setInfo('Te enviamos un código por SMS.')
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'No pude enviar el codigo')
+      setError(requestError instanceof Error ? requestError.message : 'No pude enviar el código')
     } finally {
       setLoading(false)
     }
   }
 
-  async function handleLogin() {
+  async function handlePhoneLogin() {
     setError('')
     setInfo('')
     setLoading(true)
 
     try {
-      if (method === 'phone') {
-        if (!phone.trim()) throw new Error('Completa tu telefono')
-        if (!codeSent) {
-          await sendPhoneCode(phone, 'login')
-          setCodeSent(true)
-          setInfo('Te enviamos un codigo por SMS.')
-          return
-        }
-        if (!code.trim()) throw new Error('Ingresa el codigo recibido')
-        await loginWithPhone(phone, code)
+      const e164 = toE164(nationalPhone, country.iso2)
+      if (!e164) throw new Error('Ingresá un teléfono válido')
+      if (!codeSent) {
+        await sendPhoneCode(e164, 'login')
+        setCodeSent(true)
+        setInfo('Te enviamos un código por SMS.')
         return
       }
-
-      if (!email || !password) throw new Error('Completa email y contrasena')
-      await login(email, password)
+      if (!code.trim()) throw new Error('Ingresa el código recibido')
+      await loginWithPhone(e164, code)
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'No pude iniciar sesion')
     } finally {
@@ -71,10 +97,185 @@ export default function LoginScreen() {
     }
   }
 
-  function switchMethod(nextMethod: LoginMethod) {
-    setMethod(nextMethod)
+  async function handleEmailFlow() {
     setError('')
     setInfo('')
+    setLoading(true)
+
+    try {
+      if (!email.trim()) throw new Error('Completa tu email')
+
+      if (emailStep === 'email') {
+        const response = await startEmailAuth(email)
+        if (response.nextStep === 'password') {
+          setEmailStep('password')
+          setInfo('Esta cuenta ya tiene contraseña. Ingresa para continuar.')
+        } else {
+          setEmailStep('code')
+          setInfo(
+            response.devCode
+              ? `Te enviamos un código por email. Desarrollo: ${response.devCode}`
+              : 'Te enviamos un código por email.'
+          )
+        }
+        return
+      }
+
+      if (emailStep === 'password') {
+        if (!password) throw new Error('Ingresa tu contraseña')
+        await login(email, password)
+        return
+      }
+
+      if (emailStep === 'code') {
+        if (!code.trim()) throw new Error('Ingresa el código recibido')
+        await verifyEmailCode(email, code)
+        setEmailStep('setPassword')
+        setInfo('Código verificado. Ahora elige tu contraseña.')
+        return
+      }
+
+      if (!password || !confirmPassword) {
+        throw new Error('Completa y confirma tu contraseña')
+      }
+      if (password !== confirmPassword) {
+        throw new Error('Las contraseñas no coinciden')
+      }
+
+      await setEmailPassword(email, code, password)
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : 'No pude continuar con email')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleEmailResendCode() {
+    if (!email.trim()) {
+      setError('Completa tu email')
+      return
+    }
+
+    setError('')
+    setInfo('')
+    setLoading(true)
+    try {
+      const response = await startEmailAuth(email)
+      if (response.nextStep !== 'code') {
+        setEmailStep('password')
+        setInfo('Esta cuenta ya tiene contraseña. Ingresa para continuar.')
+        return
+      }
+
+      setEmailStep('code')
+      setInfo(
+        response.devCode
+          ? `Te enviamos un código nuevo por email. Desarrollo: ${response.devCode}`
+          : 'Te enviamos un código nuevo por email.'
+      )
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'No pude reenviar el código')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function renderEmailFields() {
+    return (
+      <>
+        {emailStep !== 'setPassword' ? (
+          <Input
+            label="Correo electrónico"
+            value={email}
+            onChangeText={value => {
+              setEmail(value)
+              setError('')
+              setInfo('')
+            }}
+            placeholder="tu@email.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
+        ) : null}
+
+        {emailStep === 'password' ? (
+          <Input
+            label="Contraseña"
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Tu contraseña"
+            secureTextEntry
+          />
+        ) : null}
+
+        {emailStep === 'code' ? (
+          <Input
+            label="Código por email"
+            value={code}
+            onChangeText={setCode}
+            placeholder="123456"
+            keyboardType="number-pad"
+            autoCapitalize="none"
+          />
+        ) : null}
+
+        {emailStep === 'setPassword' ? (
+          <>
+            <Text style={styles.emailSummary}>Activando acceso para {email}</Text>
+            <Input
+              label="Elige una contraseña"
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Mínimo 6 caracteres"
+              secureTextEntry
+            />
+            <Input
+              label="Confirma tu contraseña"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              placeholder="Repite la contraseña"
+              secureTextEntry
+            />
+          </>
+        ) : null}
+
+        {info ? <Text style={styles.info}>{info}</Text> : null}
+
+        <Button
+          label={
+            emailStep === 'email'
+              ? 'Continuar con email'
+              : emailStep === 'password'
+                ? 'Ingresar'
+                : emailStep === 'code'
+                  ? 'Validar código'
+                  : 'Guardar contraseña'
+          }
+          onPress={() => void handleEmailFlow()}
+          loading={loading}
+          style={styles.submit}
+        />
+
+        {emailStep === 'code' ? (
+          <TouchableOpacity style={styles.secondaryLink} onPress={() => void handleEmailResendCode()}>
+            <Text style={styles.secondaryText}>Reenviar código</Text>
+          </TouchableOpacity>
+        ) : null}
+
+        {emailStep !== 'email' ? (
+          <TouchableOpacity
+            style={styles.secondaryLink}
+            onPress={() => {
+              resetEmailFlow(email)
+              setInfo('')
+              setError('')
+            }}
+          >
+            <Text style={styles.secondaryText}>Usar otro camino</Text>
+          </TouchableOpacity>
+        ) : null}
+      </>
+    )
   }
 
   return (
@@ -102,9 +303,13 @@ export default function LoginScreen() {
             </View>
 
             <View style={styles.routeCard}>
-              <Text style={styles.routeStopLabel}>Acceso principal</Text>
-              <Text style={styles.routeStopValue}>Telefono con codigo</Text>
-              <Text style={styles.heroSmallCopy}>Twilio Verify habilita el ingreso sin contrasena.</Text>
+              <Text style={styles.routeStopLabel}>Acceso flexible</Text>
+              <Text style={styles.routeStopValue}>{method === 'phone' ? 'Teléfono con código' : 'Email inteligente'}</Text>
+              <Text style={styles.heroSmallCopy}>
+                {method === 'phone'
+                  ? 'Twilio Verify habilita el ingreso sin contraseña.'
+                  : 'Primero vemos si tu email ya tiene contraseña o si debemos activarlo.'}
+              </Text>
             </View>
 
             <View style={styles.roadBand}>
@@ -116,19 +321,21 @@ export default function LoginScreen() {
             <View style={styles.carCardPrimary}>
               <View style={styles.carCardHeader}>
                 <Text style={styles.carCardTitle}>Tu cuenta</Text>
-                <Ionicons name="phone-portrait" size={14} color={Theme.colors.black} />
+                <Ionicons name={method === 'phone' ? 'phone-portrait' : 'mail'} size={14} color={Theme.colors.black} />
               </View>
-              <Ionicons name="chatbubble-ellipses" size={38} color={Theme.colors.black} />
+              <Ionicons name={method === 'phone' ? 'chatbubble-ellipses' : 'mail-open'} size={38} color={Theme.colors.black} />
               <View style={styles.carMetaRow}>
                 <Text style={styles.carMetaPill}>SMS OTP</Text>
-                <Text style={styles.carMetaPill}>Email legado</Text>
+                <Text style={styles.carMetaPill}>Email + clave</Text>
               </View>
             </View>
           </View>
 
           <View style={styles.copy}>
-            <Text style={styles.title}>Ingresa o creá tu cuenta en segundos.</Text>
-            <Text style={styles.subtitle}>Ingresá tu telefono, te mandamos un codigo y listo. Si no tenés cuenta la creamos automáticamente.</Text>
+            <Text style={styles.title}>Ingresa o activa tu cuenta en segundos.</Text>
+            <Text style={styles.subtitle}>
+              Con teléfono seguimos igual. Con email primero revisamos si ya tienes contraseña; si no, te enviamos un código y la configuras en el momento.
+            </Text>
           </View>
 
           <View style={styles.formCard}>
@@ -139,7 +346,7 @@ export default function LoginScreen() {
                 onPress={() => switchMethod('phone')}
               >
                 <Text style={[styles.methodChipText, method === 'phone' && styles.methodChipTextActive]}>
-                  Telefono
+                  Teléfono
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -155,17 +362,20 @@ export default function LoginScreen() {
 
             {method === 'phone' ? (
               <>
-                <Input
-                  label="Telefono"
-                  value={phone}
-                  onChangeText={setPhone}
-                  placeholder="+5491112345678"
-                  keyboardType="phone-pad"
-                  autoCapitalize="none"
+                <PhoneField
+                  label="Teléfono"
+                  country={country}
+                  onChangeCountry={setCountry}
+                  national={nationalPhone}
+                  onChangeNational={value => {
+                    setNationalPhone(value)
+                    setError('')
+                    setInfo('')
+                  }}
                 />
                 {codeSent ? (
                   <Input
-                    label="Codigo SMS"
+                    label="Código SMS"
                     value={code}
                     onChangeText={setCode}
                     placeholder="123456"
@@ -177,47 +387,29 @@ export default function LoginScreen() {
                 {info ? <Text style={styles.info}>{info}</Text> : null}
 
                 <Button
-                  label={codeSent ? 'Ingresar con codigo' : 'Enviar codigo'}
-                  onPress={() => void handleLogin()}
+                  label={codeSent ? 'Ingresar con código' : 'Enviar código'}
+                  onPress={() => void handlePhoneLogin()}
                   loading={loading}
                   style={styles.submit}
                 />
 
                 {codeSent ? (
                   <TouchableOpacity style={styles.secondaryLink} onPress={() => void handlePhoneCodeRequest()}>
-                    <Text style={styles.secondaryText}>Reenviar codigo</Text>
+                    <Text style={styles.secondaryText}>Reenviar código</Text>
                   </TouchableOpacity>
                 ) : null}
               </>
             ) : (
-              <>
-                <Input
-                  label="Correo electronico"
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="tu@email.com"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <Input
-                  label="Contrasena"
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Minimo 6 caracteres"
-                  secureTextEntry
-                />
-
-                <Button label="Ingresar" onPress={() => void handleLogin()} loading={loading} style={styles.submit} />
-              </>
+              renderEmailFields()
             )}
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
-            {method === 'email' && (
+            {method === 'email' ? (
               <TouchableOpacity style={styles.registerLink} onPress={() => router.replace('/auth/register')}>
-                <Text style={styles.registerText}>No tenes cuenta? Crear una</Text>
+                <Text style={styles.registerText}>¿Prefieres crear cuenta con teléfono?</Text>
               </TouchableOpacity>
-            )}
+            ) : null}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -461,6 +653,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     marginBottom: 10,
+  },
+  emailSummary: {
+    color: Theme.colors.textMuted,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 12,
   },
   error: {
     color: Theme.colors.danger,

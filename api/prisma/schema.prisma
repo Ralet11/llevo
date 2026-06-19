@@ -45,6 +45,7 @@ model User {
   driverRoutes      DriverRoute[]    @relation("DriverRoutes")
   sentShipments     Shipment[]       @relation("SentShipments")
   shipmentJobs      ShipmentJob[]    @relation("DriverJobs")
+  emailAuthCodes    EmailAuthCode[]
 }
 
 enum DriverVerificationStatus {
@@ -336,4 +337,18 @@ enum JobStatus {
   ACTIVE
   COMPLETED
   CANCELLED
+}
+
+model EmailAuthCode {
+  id         String   @id @default(cuid())
+  email      String
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([email, createdAt(sort: Desc)])
 }

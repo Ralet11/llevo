@@ -1,13 +1,67 @@
 import { Ionicons } from '@expo/vector-icons'
+import * as Google from 'expo-auth-session/providers/google'
 import { router } from 'expo-router'
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import * as WebBrowser from 'expo-web-browser'
+import { useEffect, useState } from 'react'
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../components/app/ScreenSafeArea'
 import { Button } from '../components/ui/Button'
 import { Theme } from '../constants/theme'
+import { useAuth } from '../lib/auth'
+
+// Necesario para que el popup de OAuth cierre y devuelva el resultado.
+WebBrowser.maybeCompleteAuthSession()
+
+// Client IDs de Google Cloud (cargados por config, sin hardcodear). Si faltan,
+// el boton queda como "Pronto". Ver .env.example para que pegar en cada uno.
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID
+const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
+const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
+const GOOGLE_CONFIGURED = Boolean(GOOGLE_WEB_CLIENT_ID || GOOGLE_ANDROID_CLIENT_ID || GOOGLE_IOS_CLIENT_ID)
 
 export default function OnboardingScreen() {
+  const { loginWithGoogle } = useAuth()
+  const [googleLoading, setGoogleLoading] = useState(false)
+
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId: GOOGLE_IOS_CLIENT_ID,
+  })
+
+  useEffect(() => {
+    if (response?.type !== 'success') {
+      if (response?.type === 'error') setGoogleLoading(false)
+      return
+    }
+    const idToken = response.params?.id_token ?? response.authentication?.idToken
+    if (!idToken) {
+      setGoogleLoading(false)
+      Alert.alert('Google', 'No pudimos obtener tu identidad de Google. Intenta de nuevo.')
+      return
+    }
+    loginWithGoogle(idToken)
+      .catch(error => {
+        Alert.alert('Google', error instanceof Error ? error.message : 'No pudimos iniciar sesion con Google.')
+      })
+      .finally(() => setGoogleLoading(false))
+  }, [response, loginWithGoogle])
+
   function showPendingProvider() {
-    Alert.alert('Disponible pronto', 'Telefono y Google se activaran cuando conectemos los proveedores reales.')
+    Alert.alert('Disponible pronto', 'Google se activara cuando carguemos las credenciales de OAuth.')
+  }
+
+  async function handleGoogle() {
+    if (!GOOGLE_CONFIGURED) {
+      showPendingProvider()
+      return
+    }
+    setGoogleLoading(true)
+    try {
+      await promptAsync()
+    } catch {
+      setGoogleLoading(false)
+    }
   }
 
   return (
@@ -96,14 +150,23 @@ export default function OnboardingScreen() {
       </View>
 
       <View style={styles.actions}>
-        <Button label="Continuar con email" onPress={() => router.replace('/auth/login')} />
-        <TouchableOpacity activeOpacity={0.82} style={styles.googleButton} onPress={showPendingProvider}>
+        <Button label="Entrar a tu cuenta" onPress={() => router.replace('/auth/login')} />
+        <TouchableOpacity
+          activeOpacity={0.82}
+          style={styles.googleButton}
+          disabled={googleLoading || (GOOGLE_CONFIGURED && !request)}
+          onPress={() => void handleGoogle()}
+        >
           <Ionicons name="logo-google" size={18} color={Theme.colors.text} />
           <Text style={styles.googleText}>Continuar con Google</Text>
-          <Text style={styles.pending}>Pronto</Text>
+          {googleLoading ? (
+            <ActivityIndicator size="small" color={Theme.colors.lime} style={styles.googleSpinner} />
+          ) : GOOGLE_CONFIGURED ? null : (
+            <Text style={styles.pending}>Pronto</Text>
+          )}
         </TouchableOpacity>
         <TouchableOpacity style={styles.registerLink} onPress={() => router.replace('/auth/register')}>
-          <Text style={styles.registerText}>Crear cuenta nueva</Text>
+          <Text style={styles.registerText}>Crear cuenta con teléfono</Text>
         </TouchableOpacity>
       </View>
 
@@ -379,6 +442,10 @@ const styles = StyleSheet.create({
     color: Theme.colors.textSubtle,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 11,
+  },
+  googleSpinner: {
+    position: 'absolute',
+    right: 14,
   },
   registerLink: {
     alignItems: 'center',
