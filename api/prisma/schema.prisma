@@ -15,6 +15,7 @@ model User {
   id            String   @id @default(cuid())
   email         String?  @unique
   phone         String?  @unique
+  appleId       String?  @unique
   passwordHash  String?
   name          String
   avatarUrl     String?

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { z } from 'zod'
 import { OAuth2Client } from 'google-auth-library'
+import appleSignin from 'apple-signin-auth'
 import { Expo } from 'expo-server-sdk'
 import prisma from '../lib/prisma'
 import { publicUserSelect } from '../lib/publicUser'
@@ -67,6 +68,21 @@ const googleAuthSchema = z.object({
   idToken: z.string().min(10),
 })
 
+const appleAuthSchema = z.object({
+  identityToken: z.string().min(10),
+  // Apple solo manda el nombre la primera vez, desde el cliente. Es opcional.
+  fullName: z.string().trim().min(1).optional(),
+})
+
+// Bundle IDs validos como audiencia del identity token de Apple (app nativa).
+function getAppleClientIds(): string[] {
+  const raw = process.env.APPLE_CLIENT_IDS || process.env.APPLE_BUNDLE_ID || ''
+  return raw
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+}
+
 // Acepta uno o varios client IDs (web/android/ios) separados por coma. Son la
 // "audiencia" valida del id_token. Se cargan por env, sin hardcodear secretos.
 function getGoogleClientIds(): string[] {
@@ -125,6 +141,59 @@ export async function loginWithGoogle(req: Request, res: Response, next: NextFun
           name: payload.name?.trim() || buildNameFromEmail(email),
           email,
           avatarUrl: payload.picture || undefined,
+          isVerified: true,
+        },
+        select: publicUserSelect,
+      })
+    }
+
+    res.json({ user, token: signToken(user.id) })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export async function loginWithApple(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { identityToken, fullName } = appleAuthSchema.parse(req.body)
+
+    const audience = getAppleClientIds()
+    if (audience.length === 0) {
+      throw new AppError('Apple Sign-In no esta configurado en el servidor', 500)
+    }
+
+    // Verifica firma (claves publicas de Apple), issuer y audiencia (bundle id).
+    const payload = await appleSignin.verifyIdToken(identityToken, { audience })
+    const appleId = payload.sub
+    if (!appleId) {
+      throw new AppError('No pudimos validar tu cuenta de Apple', 401)
+    }
+
+    // El email solo viene si el usuario lo comparte; puede ser un relay de Apple.
+    const email = payload.email ? normalizeEmail(payload.email) : undefined
+
+    // Match por appleId (estable) primero; si no, por email (vincula cuentas ya
+    // creadas por email/telefono); si no existe, crea una nueva verificada.
+    let user = await prisma.user.findUnique({ where: { appleId }, select: publicUserSelect })
+
+    if (!user && email) {
+      const byEmail = await prisma.user.findUnique({ where: { email }, select: publicUserSelect })
+      if (byEmail) {
+        // Cuenta existente sin vincular: la asociamos al appleId para proximos logins.
+        user = await prisma.user.update({
+          where: { id: byEmail.id },
+          data: { appleId },
+          select: publicUserSelect,
+        })
+      }
+    }
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          name: fullName?.trim() || (email ? buildNameFromEmail(email) : 'Usuario'),
+          email,
+          appleId,
           isVerified: true,
         },
         select: publicUserSelect,

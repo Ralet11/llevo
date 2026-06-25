@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import {
   login,
+  loginWithApple,
   loginWithGoogle,
   loginWithPhone,
   me,
@@ -32,6 +33,7 @@ router.post('/phone/send-code', smsLimit, sendPhoneCode)
 router.post('/phone/register', smsLimit, registerWithPhone)
 router.post('/phone/login', smsLimit, loginWithPhone)
 router.post('/google', loginLimit, loginWithGoogle)
+router.post('/apple', loginLimit, loginWithApple)
 router.get('/me', authenticate, me)
 router.post('/push-token', authenticate, savePushToken)
 
