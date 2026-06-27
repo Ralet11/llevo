@@ -35,10 +35,15 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
   const originNorm = normalize(params.originCity)
   const destNorm = normalize(params.destinationCity)
 
+  // Mismo origen y destino => envio dentro de la ciudad (lo cubren rutas LOCAL).
+  const isLocalShipment = originNorm === destNorm
+
   const routes = await prisma.driverRoute.findMany({
     where: {
       isActive: true,
       maxWeightKg: { gte: params.weightKg },
+      // isActive en una ruta LOCAL significa "online" (presencia en tiempo real).
+      kind: isLocalShipment ? 'LOCAL' : 'INTERCITY',
       ...(params.senderId ? { driverId: { not: params.senderId } } : {}),
     },
     include: {
@@ -58,6 +63,11 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
   }
 
   const matched = routes.filter(route => {
+    if (isLocalShipment) {
+      // Local: la ruta cubre la ciudad si su ciudad coincide. Sin filtro de dia:
+      // estar "online" (isActive) ya implica disponibilidad ahora.
+      return normalize(route.originCity) === originNorm
+    }
     const allCities = [route.originCity, ...route.waypointCities, route.destinationCity].map(normalize)
     const originIdx = allCities.indexOf(originNorm)
     const destIdx = allCities.indexOf(destNorm)

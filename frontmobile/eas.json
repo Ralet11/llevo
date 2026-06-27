@@ -9,16 +9,43 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://192.168.1.33:3001/api/v1",
+        "EXPO_PUBLIC_DEFAULT_MAP_LAT": "-34.6037",
+        "EXPO_PUBLIC_DEFAULT_MAP_LNG": "-58.3816",
+        "EXPO_PUBLIC_DEFAULT_MAP_DELTA": "0.035",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "216732871630-8bkth4g9t0ikjifrgf13c2g6ik1n3bfg.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "216732871630-62k5vjn7vf8qoilm92srbaruvh2bn6np.apps.googleusercontent.com"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://llevo.duckdns.org/api/v1",
+        "EXPO_PUBLIC_DEFAULT_MAP_LAT": "-34.6037",
+        "EXPO_PUBLIC_DEFAULT_MAP_LNG": "-58.3816",
+        "EXPO_PUBLIC_DEFAULT_MAP_DELTA": "0.035",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "216732871630-8bkth4g9t0ikjifrgf13c2g6ik1n3bfg.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "216732871630-62k5vjn7vf8qoilm92srbaruvh2bn6np.apps.googleusercontent.com"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://llevo.duckdns.org/api/v1",
+        "EXPO_PUBLIC_DEFAULT_MAP_LAT": "-34.6037",
+        "EXPO_PUBLIC_DEFAULT_MAP_LNG": "-58.3816",
+        "EXPO_PUBLIC_DEFAULT_MAP_DELTA": "0.035",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "216732871630-8bkth4g9t0ikjifrgf13c2g6ik1n3bfg.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "216732871630-62k5vjn7vf8qoilm92srbaruvh2bn6np.apps.googleusercontent.com"
+      }
     }
   },
   "submit": {

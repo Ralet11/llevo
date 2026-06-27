@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
+import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Google from 'expo-auth-session/providers/google'
 import { router } from 'expo-router'
 import * as WebBrowser from 'expo-web-browser'
@@ -29,7 +30,7 @@ const PLATFORM_GOOGLE_CLIENT_ID = Platform.select({
 const GOOGLE_CONFIGURED = Boolean(PLATFORM_GOOGLE_CLIENT_ID)
 
 export default function OnboardingScreen() {
-  const { loginWithGoogle } = useAuth()
+  const { loginWithGoogle, loginWithApple } = useAuth()
 
   function showPendingProvider() {
     Alert.alert('Disponible pronto', 'Google se activara cuando carguemos las credenciales de OAuth.')
@@ -131,6 +132,7 @@ export default function OnboardingScreen() {
             <Text style={styles.pending}>Pronto</Text>
           </TouchableOpacity>
         )}
+        {Platform.OS === 'ios' ? <AppleSignInButton onIdentityToken={loginWithApple} /> : null}
         <TouchableOpacity style={styles.registerLink} onPress={() => router.replace('/auth/register')}>
           <Text style={styles.registerText}>Crear cuenta con teléfono</Text>
         </TouchableOpacity>
@@ -193,6 +195,49 @@ function GoogleSignInButton({ onIdToken }: { onIdToken: (idToken: string) => Pro
         <ActivityIndicator size="small" color={Theme.colors.lime} style={styles.googleSpinner} />
       ) : null}
     </TouchableOpacity>
+  )
+}
+
+// Boton oficial de Apple (requisito de la guideline 4.8 para publicar en iOS).
+// Apple solo entrega el nombre en el PRIMER login, asi que lo mandamos al backend
+// cuando viene; despues el token alcanza para identificar al usuario.
+function AppleSignInButton({
+  onIdentityToken,
+}: {
+  onIdentityToken: (identityToken: string, fullName?: string) => Promise<unknown>
+}) {
+  async function handleApple() {
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      })
+      if (!credential.identityToken) {
+        Alert.alert('Apple', 'No pudimos obtener tu identidad de Apple. Intenta de nuevo.')
+        return
+      }
+      const fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
+        .filter(Boolean)
+        .join(' ')
+        .trim()
+      await onIdentityToken(credential.identityToken, fullName || undefined)
+    } catch (error) {
+      // El usuario cancelo el dialogo: no mostramos error.
+      if ((error as { code?: string }).code === 'ERR_REQUEST_CANCELED') return
+      Alert.alert('Apple', error instanceof Error ? error.message : 'No pudimos iniciar sesion con Apple.')
+    }
+  }
+
+  return (
+    <AppleAuthentication.AppleAuthenticationButton
+      buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+      cornerRadius={Theme.radius.md}
+      style={styles.appleButton}
+      onPress={() => void handleApple()}
+    />
   )
 }
 
@@ -454,6 +499,10 @@ const styles = StyleSheet.create({
     color: Theme.colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
+  },
+  appleButton: {
+    height: 50,
+    width: '100%',
   },
   pending: {
     position: 'absolute',

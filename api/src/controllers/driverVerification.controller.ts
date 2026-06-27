@@ -68,10 +68,9 @@ export async function startDriverVerification(req: AuthRequest, res: Response, n
     })
 
     if (!user) throw new AppError('Usuario no encontrado', 404)
-    if (!user.phone) throw new AppError('Tu cuenta necesita un telefono para activar el modo conductor', 400)
-    if (!user.phoneVerifiedAt) throw new AppError('Debes verificar tu telefono antes de seguir con Didit', 403)
 
     if (isDriverVerificationBypassed()) {
+      // Modo dev/QA: saltea telefono + Didit y deja la cuenta como verificada.
       const updatedUser = await prisma.user.update({
         where: { id: user.id },
         data: buildBypassedDriverVerificationUpdate(user.id),
@@ -86,6 +85,9 @@ export async function startDriverVerification(req: AuthRequest, res: Response, n
         bypassed: true,
       })
     }
+
+    if (!user.phone) throw new AppError('Tu cuenta necesita un telefono para activar el modo conductor', 400)
+    if (!user.phoneVerifiedAt) throw new AppError('Debes verificar tu telefono antes de seguir con Didit', 403)
 
     if (user.driverVerificationStatus === 'APPROVED' && user.driverVerificationSessionId) {
       return res.json({

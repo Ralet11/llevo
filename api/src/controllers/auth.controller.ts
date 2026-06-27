@@ -64,6 +64,11 @@ const loginWithPhoneSchema = z.object({
   code: z.string().trim().min(4).max(10),
 })
 
+const verifyMyPhoneSchema = z.object({
+  phone: z.string().min(8),
+  code: z.string().trim().min(4).max(10),
+})
+
 const googleAuthSchema = z.object({
   idToken: z.string().min(10),
 })
@@ -388,6 +393,33 @@ export async function loginWithPhone(req: Request, res: Response, next: NextFunc
     }
 
     res.json(await buildAuthResponse(user.id))
+  } catch (err) {
+    next(err)
+  }
+}
+
+// Verifica el telefono de un usuario YA logueado (p. ej. alta por Google) y lo
+// deja con phoneVerifiedAt para poder pasar el gate de verificacion de conductor.
+export async function verifyMyPhone(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const data = verifyMyPhoneSchema.parse(req.body)
+    const phone = normalizePhoneNumber(data.phone)
+
+    // El telefono no puede estar tomado por otra cuenta.
+    const existing = await prisma.user.findUnique({ where: { phone } })
+    if (existing && existing.id !== req.userId) {
+      throw new AppError('El telefono ya esta registrado en otra cuenta', 409)
+    }
+
+    await checkPhoneVerificationCode({ phone, code: data.code })
+
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: { phone, phoneVerifiedAt: new Date() },
+      select: publicUserSelect,
+    })
+
+    res.json({ user })
   } catch (err) {
     next(err)
   }

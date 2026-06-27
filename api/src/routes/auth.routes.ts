@@ -12,6 +12,7 @@ import {
   setEmailPassword,
   startEmailAuth,
   verifyEmailCode,
+  verifyMyPhone,
 } from '../controllers/auth.controller'
 import { authenticate } from '../middleware/authenticate'
 import { rateLimit } from '../middleware/rateLimit'
@@ -32,6 +33,7 @@ router.post('/email/set-password', emailCodeLimit, setEmailPassword)
 router.post('/phone/send-code', smsLimit, sendPhoneCode)
 router.post('/phone/register', smsLimit, registerWithPhone)
 router.post('/phone/login', smsLimit, loginWithPhone)
+router.post('/phone/verify', smsLimit, authenticate, verifyMyPhone)
 router.post('/google', loginLimit, loginWithGoogle)
 router.post('/apple', loginLimit, loginWithApple)
 router.get('/me', authenticate, me)

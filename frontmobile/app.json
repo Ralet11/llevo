@@ -13,8 +13,16 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.llevo.app",
+      "usesAppleSignIn": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa."
+        "NSLocationWhenInUseUsageDescription": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa.",
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.216732871630-62k5vjn7vf8qoilm92srbaruvh2bn6np"
+            ]
+          }
+        ]
       }
     },
     "android": {
@@ -51,7 +59,8 @@
           "locationWhenInUsePermission": "LLEVO usa tu ubicacion para mostrar viajes, entregas y puntos cercanos en el mapa."
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": true

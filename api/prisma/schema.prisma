@@ -222,6 +222,10 @@ model DriverRoute {
   driverId          String
   driver            User        @relation("DriverRoutes", fields: [driverId], references: [id])
 
+  // INTERCITY: origen -> paradas -> destino, en dias programados.
+  // LOCAL: una sola ciudad (origin == destination), isActive = online/offline.
+  kind              DriverRouteKind @default(INTERCITY)
+
   originCity        String
   waypointCities    String[]    @default([])
   destinationCity   String
@@ -243,6 +247,11 @@ model DriverRoute {
   updatedAt         DateTime    @updatedAt
 
   shipmentJobs      ShipmentJob[]
+}
+
+enum DriverRouteKind {
+  INTERCITY
+  LOCAL
 }
 
 enum DayOfWeek {

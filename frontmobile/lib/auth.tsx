@@ -96,8 +96,10 @@ type AuthContextType = {
   setEmailPassword: (email: string, code: string, password: string) => Promise<void>
   register: (data: LegacyRegisterData) => Promise<void>
   sendPhoneCode: (phone: string, intent: PhoneCodeIntent) => Promise<void>
+  verifyMyPhone: (phone: string, code: string) => Promise<void>
   loginWithPhone: (phone: string, code: string) => Promise<void>
   loginWithGoogle: (idToken: string) => Promise<void>
+  loginWithApple: (identityToken: string, fullName?: string) => Promise<void>
   registerWithPhone: (data: PhoneRegisterData) => Promise<void>
   refreshSession: () => Promise<User | null>
   startDriverVerification: (callbackUrl: string) => Promise<DriverVerificationSession>
@@ -275,6 +277,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await api.post('/auth/phone/send-code', { phone, intent })
   }
 
+  // Verifica el telefono de la sesion actual (alta por Google/email) sin cambiar
+  // de cuenta: actualiza el usuario con phoneVerifiedAt para destrabar el gate.
+  async function verifyMyPhone(phone: string, code: string) {
+    if (!token) throw new Error('No hay sesion activa')
+    const response = await api.post<MeResponse>('/auth/phone/verify', { phone, code }, token)
+    await setPersistedUser(normalizeUser(response.user))
+  }
+
   async function loginWithPhone(phone: string, code: string) {
     const response = await api.post<AuthResponse>('/auth/phone/login', { phone, code })
     await persistSession(response.token, normalizeUser(response.user))
@@ -282,6 +292,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function loginWithGoogle(idToken: string) {
     const response = await api.post<AuthResponse>('/auth/google', { idToken })
+    await persistSession(response.token, normalizeUser(response.user))
+  }
+
+  async function loginWithApple(identityToken: string, fullName?: string) {
+    const response = await api.post<AuthResponse>('/auth/apple', { identityToken, fullName })
     await persistSession(response.token, normalizeUser(response.user))
   }
 
@@ -345,6 +360,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         sendPhoneCode,
         loginWithPhone,
         loginWithGoogle,
+        loginWithApple,
+        verifyMyPhone,
         registerWithPhone,
         refreshSession,
         startDriverVerification,
