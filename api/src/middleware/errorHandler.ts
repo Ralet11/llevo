@@ -14,7 +14,7 @@ export class AppError extends Error {
 
 export function errorHandler(
   err: Error,
-  _req: Request,
+  req: Request & { requestId?: string },
   res: Response,
   _next: NextFunction,
 ): void {
@@ -40,11 +40,11 @@ export function errorHandler(
       res.status(409).json({ error: 'Ya existe un registro con esos datos' })
       return
     }
-    console.error('[prisma]', err.code, err.message)
+    console.error('[error]', JSON.stringify({ requestId: req.requestId, type: 'prisma', code: err.code, message: err.message }))
     res.status(500).json({ error: 'Error de base de datos' })
     return
   }
 
-  console.error(err)
+  console.error('[error]', JSON.stringify({ requestId: req.requestId, type: err.name, message: err.message }))
   res.status(500).json({ error: 'Error interno del servidor' })
 }

@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import router from './routes'
 import { errorHandler } from './middleware/errorHandler'
+import { requestLogger } from './middleware/requestLogger'
 
 const app = express()
 const DIDIT_WEBHOOK_PATH = '/api/v1/drivers/verification/webhook'
@@ -11,6 +12,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   credentials: true,
 }))
+app.use(requestLogger)
 
 app.use(express.json({
   verify: (req, _res, buf) => {
