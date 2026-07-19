@@ -7,8 +7,9 @@ import { Avatar } from '../../components/ui/Avatar'
 import { Button } from '../../components/ui/Button'
 import { IconButton } from '../../components/ui/IconButton'
 import { Input } from '../../components/ui/Input'
-import { Theme } from '../../constants/theme'
+import { PaletteName, palettes, Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
+import { useTheme } from '../../lib/theme'
 
 function splitName(fullName?: string) {
   const parts = (fullName ?? '').trim().split(' ').filter(Boolean)
@@ -25,24 +26,29 @@ function initials(name?: string) {
 
 export default function ProfileScreen() {
   const { user, updateUser } = useAuth()
+  const { palette, paletteName, setPalette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   const nameParts = splitName(user?.name)
   const [firstName, setFirstName] = useState(nameParts.firstName)
   const [lastName, setLastName] = useState(nameParts.lastName)
   const [email, setEmail] = useState(user?.email ?? '')
   const [city, setCity] = useState(user?.city ?? 'Buenos Aires')
-  const [phone, setPhone] = useState(user?.phone ?? '')
   const [saving, setSaving] = useState(false)
 
   async function handleSave() {
     setSaving(true)
-    await updateUser({
-      name: [firstName, lastName].filter(Boolean).join(' ').trim(),
-      email,
-      city,
-      phone,
-    })
-    setSaving(false)
-    Alert.alert('Perfil guardado', 'Tus datos se actualizaron en esta sesion.')
+    try {
+      await updateUser({
+        name: [firstName, lastName].filter(Boolean).join(' ').trim(),
+        email,
+      })
+      Alert.alert('Perfil guardado', 'Tus datos se actualizaron correctamente.')
+    } catch (err) {
+      Alert.alert('No se pudo guardar', err instanceof Error ? err.message : 'Intenta de nuevo en unos segundos.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -57,12 +63,12 @@ export default function ProfileScreen() {
         <View style={styles.avatarWrap}>
           <Avatar initials={initials(`${firstName} ${lastName}`)} size={94} />
           <TouchableOpacity activeOpacity={0.86} style={styles.cameraButton}>
-            <Ionicons name="camera" size={18} color={Theme.colors.text} />
+            <Ionicons name="camera" size={18} color={colors.text} />
           </TouchableOpacity>
         </View>
 
         <View style={styles.warning}>
-          <Ionicons name="warning" size={20} color={Theme.colors.text} />
+          <Ionicons name="warning" size={20} color={colors.text} />
           <Text style={styles.warningText}>
             Tu foto de perfil aun no fue cargada. Subir una foto clara ayuda a generar confianza.
           </Text>
@@ -79,26 +85,53 @@ export default function ProfileScreen() {
             keyboardType="email-address"
             autoCapitalize="none"
           />
+          <Input label="Ciudad" value={city} onChangeText={setCity} placeholder="Buenos Aires" />
 
-          <TouchableOpacity activeOpacity={0.86} style={styles.selectRow}>
-            <View style={styles.selectCopy}>
-              <Text style={styles.selectLabel}>Ciudad</Text>
-              <Text style={styles.selectValue}>{city}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={Theme.colors.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity activeOpacity={0.86} style={styles.selectRow}>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            style={styles.selectRow}
+            onPress={() => router.push('/verify-phone')}
+          >
             <View style={styles.selectCopy}>
               <Text style={styles.selectLabel}>Telefono</Text>
-              <Text style={styles.selectValue}>{phone || 'Agregar telefono'}</Text>
+              <Text style={styles.selectValue}>
+                {user?.phone ? user.phone : 'Agregar telefono'}
+              </Text>
+              {user?.phone && !user.phoneVerifiedAt ? (
+                <Text style={styles.selectHint}>Pendiente de verificar</Text>
+              ) : null}
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Theme.colors.textMuted} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
 
-          <View style={styles.inlineEdit}>
-            <Input label="Editar ciudad" value={city} onChangeText={setCity} placeholder="Buenos Aires" />
-            <Input label="Editar telefono" value={phone} onChangeText={setPhone} placeholder="11-1234-5678" />
+          <View style={styles.paletteSection}>
+            <Text style={styles.paletteTitle}>Paleta de prueba</Text>
+            <Text style={styles.paletteHint}>El cambio se guarda en este dispositivo.</Text>
+            <View style={styles.paletteList}>
+              {(Object.keys(palettes) as PaletteName[]).map((name) => {
+                const option = palettes[name]
+                const selected = name === paletteName
+                return (
+                  <TouchableOpacity
+                    key={name}
+                    activeOpacity={0.84}
+                    onPress={() => setPalette(name)}
+                    style={[styles.paletteOption, selected && styles.paletteOptionSelected]}
+                  >
+                    <View style={styles.paletteSwatches}>
+                      <View style={[styles.swatch, { backgroundColor: option.colors.background }]} />
+                      <View style={[styles.swatch, { backgroundColor: option.colors.surface }]} />
+                      <View style={[styles.swatch, { backgroundColor: option.colors.lime }]} />
+                    </View>
+                    <View style={styles.paletteCopy}>
+                      <Text style={styles.paletteName}>{option.name}</Text>
+                      <Text style={styles.paletteDescription}>{option.description}</Text>
+                    </View>
+                    {selected ? <Ionicons name="checkmark-circle" size={20} color={colors.lime} /> : null}
+                  </TouchableOpacity>
+                )
+              })}
+            </View>
           </View>
         </View>
 
@@ -108,10 +141,10 @@ export default function ProfileScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
   },
   header: {
     height: 58,
@@ -119,10 +152,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Theme.colors.surface,
+    backgroundColor: colors.surface,
   },
   headerTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -147,9 +180,9 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surfaceMuted,
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 2,
-    borderColor: Theme.colors.background,
+    borderColor: colors.background,
   },
   warning: {
     flexDirection: 'row',
@@ -157,12 +190,12 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 12,
     borderRadius: 10,
-    backgroundColor: Theme.colors.dangerSurface,
+    backgroundColor: colors.dangerSurface,
     marginBottom: 14,
   },
   warningText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 11,
     lineHeight: 16,
@@ -178,28 +211,50 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Theme.colors.surfaceMuted,
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   selectCopy: {
     flex: 1,
   },
   selectLabel: {
-    color: Theme.colors.textSubtle,
+    color: colors.textSubtle,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 10,
     marginBottom: 3,
   },
   selectValue: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 14,
   },
-  inlineEdit: {
-    marginTop: 2,
+  selectHint: {
+    color: colors.warning,
+    fontFamily: Theme.fonts.semiBold,
+    fontSize: 11,
+    marginTop: 3,
   },
   saveButton: {
     marginTop: 8,
   },
+  paletteSection: {
+    marginTop: 10,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  paletteTitle: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 14 },
+  paletteHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 11, marginTop: 4, marginBottom: 10 },
+  paletteList: { gap: 8 },
+  paletteOption: {
+    minHeight: 62, borderRadius: Theme.radius.md, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface,
+  },
+  paletteOptionSelected: { borderColor: colors.lime },
+  paletteSwatches: { flexDirection: 'row', marginRight: 10 },
+  swatch: { width: 17, height: 30, borderRadius: 5, marginRight: -4, borderWidth: 1, borderColor: colors.border },
+  paletteCopy: { flex: 1, marginLeft: 4 },
+  paletteName: { color: colors.text, fontFamily: Theme.fonts.semiBold, fontSize: 13 },
+  paletteDescription: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 10, marginTop: 2 },
 })

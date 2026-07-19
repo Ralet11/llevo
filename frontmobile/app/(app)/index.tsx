@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
-import { Href, router, usePathname } from 'expo-router'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Href, router, usePathname, useFocusEffect } from 'expo-router'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -26,11 +26,15 @@ import { Calendar } from 'react-native-calendars'
 import MapView, { Marker, Polyline, type LatLng, type Region } from 'react-native-maps'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppDrawer } from '../../components/app/AppDrawer'
+import { HomeDashboard } from '../../components/app/home/HomeDashboard'
 import { IconButton } from '../../components/ui/IconButton'
 import { darkMapStyle } from '../../constants/mapStyle'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
+import { useTheme } from '../../lib/theme'
 import { api, ApiError } from '../../lib/api'
+import { getSocket } from '../../lib/socket'
+import { cancelShipment, fetchMyShipments, isActiveShipmentStatus, type MyShipment, type PackageSize } from '../../lib/shipments'
 import {
   autocompletePlaces,
   computeRoutePreview,
@@ -54,7 +58,7 @@ type SearchReturnStage = 'idle' | 'results'
 type SearchField = 'origin' | 'destination'
 type RouteOfferId = 'economico' | 'moto' | 'grupo'
 type DeliveryPackageSize = 'small' | 'medium' | 'large' | 'bulky'
-type DeliveryRequestStatus = 'idle' | 'searching' | 'accepted' | 'no_coverage'
+type DeliveryRequestStatus = 'idle' | 'searching' | 'accepted' | 'picked_up' | 'delivered' | 'no_coverage'
 type DeliveryWizardStep = 'route' | 'package' | 'contacts'
 
 type RouteOffer = {
@@ -93,17 +97,15 @@ type PlacePreset = {
 type DeliveryDraft = {
   estimatedWeight: string
   estimatedSize: DeliveryPackageSize | null
-  pickupAddress: string   // dirección exacta de retiro (calle, número, piso)
-  pickupContactName: string
-  pickupContactPhone: string
   notes: string
-  deliveryAddress: string // referencia adicional para la entrega
+  deliveryAddress: string
   deliveryDetails: string
   declarationAccepted: boolean
   preferredDate: string | null // YYYY-MM-DD, null = envío inmediato
 }
 
 type AssignedDriver = {
+  id: string | null
   name: string
   phone: string | null
   rating: number | null
@@ -197,8 +199,8 @@ const DELIVERY_WIZARD_STEPS: {
   {
     id: 'contacts',
     label: 'Entrega',
-    title: 'Contacto y confirmacion',
-    subtitle: 'Necesitamos los datos del retiro y de la recepcion antes de buscar conductor.',
+    title: 'Datos de recepcion',
+    subtitle: 'Quien recibe el paquete y como contactarlos.',
     cta: 'Buscar conductor',
   },
 ]
@@ -206,9 +208,6 @@ const DELIVERY_WIZARD_STEPS: {
 const EMPTY_DELIVERY_DRAFT: DeliveryDraft = {
   estimatedWeight: '',
   estimatedSize: null,
-  pickupAddress: '',
-  pickupContactName: '',
-  pickupContactPhone: '',
   notes: '',
   deliveryAddress: '',
   deliveryDetails: '',
@@ -295,12 +294,16 @@ function validateDeliveryPackageStep(draft: DeliveryDraft) {
 }
 
 function validateDeliveryContactsStep(draft: DeliveryDraft) {
-  if (!draft.pickupAddress.trim()) return 'Ingresa la dirección exacta de retiro (calle y número).'
-  if (!draft.pickupContactName.trim()) return 'Ingresa tu nombre o el del contacto en origen.'
-  if (!draft.pickupContactPhone.trim()) return 'Ingresa un telefono de contacto en origen.'
-  if (!draft.deliveryDetails.trim()) return 'Agrega los datos de entrega.'
+  if (!draft.deliveryDetails.trim()) return 'Agrega los datos de quien recibe el paquete.'
   if (!draft.declarationAccepted) return 'Acepta la declaracion jurada para continuar.'
 
+  return null
+}
+
+// El backend exige un telefono de contacto para el retiro; las cuentas creadas
+// por email/Google pueden no tener uno cargado todavia.
+function validateSenderPhone(phone: string | null | undefined) {
+  if (!phone || !phone.trim()) return 'Agrega tu telefono en tu perfil antes de enviar un paquete.'
   return null
 }
 
@@ -308,6 +311,21 @@ function getPreferredDeliveryOfferId(size: DeliveryPackageSize | null): RouteOff
   if (size === 'small' || size === 'medium') return 'moto'
   if (size === 'large' || size === 'bulky') return 'grupo'
   return 'economico'
+}
+
+function packageSizeToDeliverySize(size: PackageSize): DeliveryPackageSize {
+  return size.toLowerCase() as DeliveryPackageSize
+}
+
+function shipmentStatusToTrackingStatus(status: MyShipment['status']): DeliveryRequestStatus {
+  switch (status) {
+    case 'SEARCHING': return 'searching'
+    case 'ASSIGNED': return 'accepted'
+    case 'PICKED_UP': return 'picked_up'
+    case 'DELIVERED': return 'delivered'
+    case 'NO_COVERAGE': return 'no_coverage'
+    default: return 'searching'
+  }
 }
 
 function validateDeliveryDraft(destination: string, draft: DeliveryDraft) {
@@ -529,6 +547,9 @@ function SearchMarker({
   label: string
   variant: 'origin' | 'destination' | 'offer'
 }) {
+  const { palette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   const containerStyle =
     variant === 'origin'
       ? styles.searchMarkerOrigin
@@ -541,7 +562,7 @@ function SearchMarker({
       <Ionicons
         name={icon}
         size={variant === 'offer' ? 14 : 15}
-        color={variant === 'destination' ? Theme.colors.black : Theme.colors.text}
+        color={variant === 'destination' ? colors.black : colors.text}
       />
       {variant === 'offer' && <Text style={styles.searchMarkerLabel}>{label}</Text>}
     </View>
@@ -550,6 +571,9 @@ function SearchMarker({
 
 export default function AppHomeScreen() {
   const { user, token, logout } = useAuth()
+  const { palette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0)
@@ -586,7 +610,7 @@ export default function AppHomeScreen() {
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null)
   const [currentShipmentId, setCurrentShipmentId] = useState<string | null>(null)
   const [searchSessionToken, setSearchSessionToken] = useState('')
-  const idleProgress = useRef(new Animated.Value(1)).current
+  const [myShipments, setMyShipments] = useState<MyShipment[]>([])
   const searchProgress = useRef(new Animated.Value(0)).current
   const resultsProgress = useRef(new Animated.Value(0)).current
   const searchingPulse = useRef(new Animated.Value(0)).current
@@ -650,14 +674,37 @@ export default function AppHomeScreen() {
     }
   }, [])
 
+  const loadShipments = useCallback(async () => {
+    if (!token) return
+    try {
+      const shipments = await fetchMyShipments(token)
+      setMyShipments(shipments)
+    } catch {
+      // falla silenciosamente, se reintenta en el proximo focus
+    }
+  }, [token])
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadShipments()
+    }, [loadShipments])
+  )
+
+  // Socket: mantiene "myShipments" al día en tiempo real (chip de envío activo,
+  // historial) sin depender de que la pantalla vuelva a tener foco. El listener
+  // de mas abajo (para el panel de tracking en vivo) solo corre mientras
+  // searchStage === 'delivery_tracking'; este corre siempre que haya sesión.
   useEffect(() => {
-    Animated.timing(idleProgress, {
-      toValue: searchStage === 'idle' ? 1 : 0,
-      duration: 180,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start()
-  }, [idleProgress, searchStage])
+    if (!token) return
+    const socket = getSocket()
+    function handleAnyStatusChanged() {
+      void loadShipments()
+    }
+    socket?.on('shipment:status_changed', handleAnyStatusChanged)
+    return () => {
+      socket?.off('shipment:status_changed', handleAnyStatusChanged)
+    }
+  }, [token, loadShipments])
 
   useEffect(() => {
     if (searchStage === 'editing') {
@@ -703,9 +750,44 @@ export default function AppHomeScreen() {
     })
   }, [resultsProgress, searchStage])
 
+  // Socket: recibe cambios de estado del envío en tiempo real
   useEffect(() => {
     if (searchStage !== 'delivery_tracking' || !currentShipmentId || !token) return
-    if (deliveryRequestStatus === 'accepted' || deliveryRequestStatus === 'no_coverage') return
+    if (deliveryRequestStatus === 'delivered' || deliveryRequestStatus === 'no_coverage') return
+
+    const socket = getSocket()
+
+    type StatusChangedPayload = {
+      shipmentId: string
+      status: string
+      driver?: { id: string; name: string; phone: string | null; rating: number | null; ratingCount: number } | null
+    }
+
+    function handleStatusChanged(data: StatusChangedPayload) {
+      if (data.shipmentId !== currentShipmentId) return
+      if (data.status === 'ASSIGNED') {
+        if (data.driver) setAssignedDriver(data.driver)
+        setDeliveryRequestStatus('accepted')
+      } else if (data.status === 'PICKED_UP') {
+        setDeliveryRequestStatus('picked_up')
+      } else if (data.status === 'DELIVERED') {
+        setDeliveryRequestStatus('delivered')
+      } else if (data.status === 'NO_COVERAGE') {
+        setDeliveryRequestStatus('no_coverage')
+      }
+    }
+
+    socket?.on('shipment:status_changed', handleStatusChanged)
+
+    return () => {
+      socket?.off('shipment:status_changed', handleStatusChanged)
+    }
+  }, [currentShipmentId, searchStage, token, deliveryRequestStatus])
+
+  // Fallback polling: compensa eventos socket perdidos por reconexión (intervalo largo)
+  useEffect(() => {
+    if (searchStage !== 'delivery_tracking' || !currentShipmentId || !token) return
+    if (deliveryRequestStatus === 'delivered' || deliveryRequestStatus === 'no_coverage') return
 
     let cancelled = false
 
@@ -713,34 +795,40 @@ export default function AppHomeScreen() {
       shipment: {
         status: string
         job?: {
-          driver: { name: string; phone: string | null; rating: number | null; ratingCount: number }
+          driver: { id: string; name: string; phone: string | null; rating: number | null; ratingCount: number }
         } | null
       }
     }
 
     async function poll() {
       try {
-        const data = await api.get<ShipmentPollResponse>(
-          `/shipments/${currentShipmentId}`,
-          token!
-        )
+        const data = await api.get<ShipmentPollResponse>(`/shipments/${currentShipmentId}`, token!)
         if (cancelled) return
         if (data.shipment.status === 'ASSIGNED') {
           if (data.shipment.job?.driver) {
             const d = data.shipment.job.driver
-            setAssignedDriver({ name: d.name, phone: d.phone, rating: d.rating, ratingCount: d.ratingCount })
+            setAssignedDriver({ id: d.id, name: d.name, phone: d.phone, rating: d.rating, ratingCount: d.ratingCount })
           }
           setDeliveryRequestStatus('accepted')
+        } else if (data.shipment.status === 'PICKED_UP') {
+          if (data.shipment.job?.driver) {
+            const d = data.shipment.job.driver
+            setAssignedDriver({ id: d.id, name: d.name, phone: d.phone, rating: d.rating, ratingCount: d.ratingCount })
+          }
+          setDeliveryRequestStatus('picked_up')
+        } else if (data.shipment.status === 'DELIVERED') {
+          setDeliveryRequestStatus('delivered')
         } else if (data.shipment.status === 'NO_COVERAGE') {
           setDeliveryRequestStatus('no_coverage')
         }
       } catch {
-        // falla silenciosamente, reintenta en el proximo ciclo
+        // falla silenciosamente, reintenta en el próximo ciclo
       }
     }
 
+    // Una sola verificación al montar (cubre estado perdido mientras la app estaba cerrada)
     poll()
-    const intervalId = setInterval(poll, 5000)
+    const intervalId = setInterval(poll, 30_000)
 
     return () => {
       cancelled = true
@@ -933,6 +1021,12 @@ export default function AppHomeScreen() {
     router.push('/driver')
   }
 
+  function openDriverProfile() {
+    if (assignedDriver?.id) {
+      router.push({ pathname: '/user/[id]', params: { id: assignedDriver.id } })
+    }
+  }
+
   async function requestLocationAgain() {
     const currentPermission = await getForegroundPermissionStatus()
 
@@ -1037,6 +1131,30 @@ export default function AppHomeScreen() {
     setAssignedDriver(null)
     setCurrentShipmentId(null)
     centerMap()
+    void loadShipments()
+  }
+
+  async function handleCancelSearch() {
+    const shipmentId = currentShipmentId
+
+    if (!shipmentId || !token) {
+      resetSearchFlow()
+      return
+    }
+
+    try {
+      await cancelShipment(token, shipmentId)
+      resetSearchFlow()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        await logout()
+        return
+      }
+      Alert.alert(
+        'No se pudo cancelar',
+        err instanceof Error ? err.message : 'Intenta de nuevo en unos segundos.'
+      )
+    }
   }
 
   function patchDeliveryDraft(patch: Partial<DeliveryDraft>) {
@@ -1071,6 +1189,17 @@ export default function AppHomeScreen() {
     const nextStep = DELIVERY_WIZARD_STEPS[currentIndex + 1]?.id
 
     if (!nextStep) {
+      if (validateSenderPhone(user?.phone)) {
+        Alert.alert(
+          'Falta tu telefono',
+          'Necesitamos un telefono verificado para que el conductor pueda coordinar el retiro.',
+          [
+            { text: 'Ahora no', style: 'cancel' },
+            { text: 'Verificar telefono', onPress: () => router.push('/verify-phone') },
+          ]
+        )
+        return
+      }
       void submitSearch()
       return
     }
@@ -1133,12 +1262,12 @@ export default function AppHomeScreen() {
       const data = await api.post<{ shipment: { id: string; status: string } }>('/shipments', {
         originCity: nextResult.originCity ?? extractCity(nextResult.originLabel),
         destinationCity: nextResult.destinationCity ?? extractCity(nextResult.destinationLabel),
-        originAddress: deliveryDraft.pickupAddress.trim() || nextResult.originLabel,
-        deliveryAddress: [destinationInput, deliveryDraft.deliveryAddress].filter(Boolean).join(', '),
+        originAddress: nextResult.originLabel,
+        deliveryAddress: [nextResult.destinationLabel, deliveryDraft.deliveryAddress].filter(Boolean).join(', '),
         weightKg,
         packageSize: (deliveryDraft.estimatedSize ?? 'medium').toUpperCase(),
-        pickupContactName: deliveryDraft.pickupContactName || (user?.name ?? ''),
-        pickupContactPhone: deliveryDraft.pickupContactPhone || (user?.phone ?? ''),
+        pickupContactName: user?.name ?? '',
+        pickupContactPhone: user?.phone ?? '',
         recipientDetails: deliveryDraft.deliveryDetails,
         notes: deliveryDraft.notes || undefined,
         // Noon ART (UTC-3) on the selected date → 15:00 UTC
@@ -1156,7 +1285,14 @@ export default function AppHomeScreen() {
         await logout()
         return
       }
-      setServiceMessage(err instanceof Error ? err.message : 'Error al registrar el pedido.')
+
+      // Sin esto, la UI se queda mostrando "buscando conductor" para siempre:
+      // el submit fallo antes de obtener un currentShipmentId, asi que el socket
+      // y el polling de estado nunca se activan. Volvemos al wizard con el error.
+      setDeliveryRequestStatus('idle')
+      setDeliveryWizardStep('contacts')
+      setDeliveryFormError(err instanceof Error ? err.message : 'Error al registrar el pedido.')
+      setSearchStage('editing')
     }
   }
 
@@ -1176,6 +1312,40 @@ export default function AppHomeScreen() {
     setTimeout(() => {
       fitRouteOnMap(nextResult)
     }, 90)
+  }
+
+  function resumeTracking(shipment: MyShipment) {
+    const fallbackResult = buildFallbackSearchResult(
+      shipment.originAddress,
+      shipment.deliveryAddress,
+      toLatLng(region),
+      currentLocationLabel
+    )
+    const deliverySize = packageSizeToDeliverySize(shipment.packageSize)
+
+    setRouteResult(fallbackResult)
+    setCurrentShipmentId(shipment.id)
+    setDeliveryDraft({
+      ...EMPTY_DELIVERY_DRAFT,
+      estimatedWeight: String(shipment.weightKg),
+      estimatedSize: deliverySize,
+      deliveryDetails: shipment.recipientDetails,
+    })
+    setSelectedOfferId(getPreferredDeliveryOfferId(deliverySize))
+    setAssignedDriver(
+      shipment.job
+        ? { id: shipment.job.driver.id, name: shipment.job.driver.name, phone: null, rating: shipment.job.driver.rating, ratingCount: 0 }
+        : null
+    )
+    setDeliveryRequestStatus(shipmentStatusToTrackingStatus(shipment.status))
+    setSearchReturnStage('results')
+    setFocusedField(null)
+    setSearchStage('delivery_tracking')
+
+    // Delay mayor que en startDeliveryTracking: el mapa recien se monta al salir del dashboard.
+    setTimeout(() => {
+      fitRouteOnMap(fallbackResult)
+    }, 350)
   }
 
   async function submitSearch(options?: { origin?: PlaceSuggestion | null; destination?: PlaceSuggestion | null }) {
@@ -1347,14 +1517,6 @@ export default function AppHomeScreen() {
     void submitSearch({ destination: suggestion })
   }
 
-  const statusText = {
-    loading: 'Buscando tu zona...',
-    device: 'Ubicacion activa',
-    permission_denied: 'Permiso de ubicacion pendiente',
-    services_off: 'GPS desactivado',
-    error: 'Usando zona inicial',
-  }[status]
-
   const visibleMarkers = MAP_MARKERS.filter(marker => marker.category === selectedCategory)
   const showingRoute = routeResult !== null
   const activeOffer = routeResult?.offers.find(offer => offer.id === selectedOfferId) ?? routeResult?.offers[0] ?? null
@@ -1378,10 +1540,8 @@ export default function AppHomeScreen() {
     routeLoading ||
     (showDeliveryRouteStep ? !destinationInput.trim() : false)
 
-  const idleTranslateY = idleProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [22, 0],
-  })
+  const activeShipment = myShipments.find(shipment => isActiveShipmentStatus(shipment.status)) ?? null
+
   const resultsTranslateY = resultsProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [34, 0],
@@ -1393,6 +1553,20 @@ export default function AppHomeScreen() {
 
   return (
     <View style={styles.container}>
+      {searchStage === 'idle' ? (
+        <HomeDashboard
+          user={user}
+          locationStatus={status}
+          onRequestLocation={requestLocationAgain}
+          onOpenDrawer={() => setDrawerVisible(true)}
+          onOpenComposer={() => openSearchComposer('idle')}
+          onOpenTravel={() => router.push('/(app)/travel')}
+          onOpenNotifications={() => router.push('/(app)/notifications')}
+          activeShipment={activeShipment}
+          onResumeTracking={resumeTracking}
+        />
+      ) : (
+        <>
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFill}
@@ -1404,8 +1578,8 @@ export default function AppHomeScreen() {
         showsUserLocation={status === 'device'}
         toolbarEnabled={false}
         moveOnMarkerPress={false}
-        loadingBackgroundColor={Theme.colors.background}
-        loadingIndicatorColor={Theme.colors.lime}
+        loadingBackgroundColor={colors.background}
+        loadingIndicatorColor={colors.lime}
         onUserLocationChange={event => {
           const coordinate = event.nativeEvent.coordinate
           if (!coordinate) return
@@ -1441,7 +1615,7 @@ export default function AppHomeScreen() {
           <>
             <Polyline
               coordinates={routeResult.routeCoordinates}
-              strokeColor={Theme.colors.lime}
+              strokeColor={colors.lime}
               strokeWidth={5}
               lineCap="round"
               lineJoin="round"
@@ -1473,87 +1647,14 @@ export default function AppHomeScreen() {
               title={marker.title}
             >
               <View style={styles.marker}>
-                <Ionicons name={marker.icon} size={16} color={Theme.colors.black} />
+                <Ionicons name={marker.icon} size={16} color={colors.black} />
               </View>
             </Marker>
           ))
         )}
       </MapView>
 
-
       <View pointerEvents="box-none" style={styles.overlay}>
-        <Animated.View
-          pointerEvents={searchStage === 'idle' ? 'auto' : 'none'}
-          renderToHardwareTextureAndroid
-          style={[styles.topBar, { paddingTop: topInset + 14, opacity: idleProgress, transform: [{ translateY: idleTranslateY }] }]}
-        >
-          <IconButton name="menu" onPress={() => setDrawerVisible(true)} />
-          <View style={styles.locationPill}>
-            <View style={styles.locationCopy}>
-              <View style={styles.locationHeader}>
-                <View style={[styles.statusDot, status === 'device' && styles.statusDotActive]} />
-                <Text style={styles.locationText}>{statusText}</Text>
-              </View>
-              <Text style={styles.locationAddress} numberOfLines={1}>{addressLabel}</Text>
-            </View>
-          </View>
-        </Animated.View>
-
-        {status !== 'device' && (
-          <Animated.View
-            pointerEvents={searchStage === 'idle' ? 'auto' : 'none'}
-            renderToHardwareTextureAndroid
-            style={[styles.permissionBanner, { opacity: idleProgress, transform: [{ translateY: idleTranslateY }] }]}
-          >
-            <Text style={styles.permissionTitle}>
-              {status === 'permission_denied' ? 'Necesitamos tu ubicacion' : 'No pudimos centrar el mapa'}
-            </Text>
-            <Text style={styles.permissionText}>
-              {status === 'permission_denied'
-                ? 'Toca habilitar para pedir permiso o abrir ajustes si Android ya lo bloqueo.'
-                : status === 'services_off'
-                  ? 'Activa el GPS del telefono para mostrar tu posicion real.'
-                  : 'Vamos a seguir mostrando una zona inicial hasta conseguir tu posicion.'}
-            </Text>
-            <TouchableOpacity activeOpacity={0.86} style={styles.permissionButton} onPress={requestLocationAgain}>
-              <Text style={styles.permissionButtonText}>
-                {status === 'permission_denied' ? 'Habilitar ubicacion' : 'Reintentar ubicacion'}
-              </Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
-
-        <Animated.View
-          pointerEvents={searchStage === 'idle' ? 'auto' : 'none'}
-          renderToHardwareTextureAndroid
-          style={[styles.rightControls, { top: topInset + 126, opacity: idleProgress, transform: [{ translateY: idleTranslateY }] }]}
-        >
-          <IconButton name="navigate" onPress={handlePrimaryMapControl} variant="dark" />
-        </Animated.View>
-
-        <Animated.View
-          pointerEvents={searchStage === 'idle' ? 'auto' : 'none'}
-          renderToHardwareTextureAndroid
-          style={[
-            styles.bottomPanel,
-            {
-              paddingBottom: insets.bottom + 16,
-              opacity: idleProgress,
-              transform: [{ translateY: idleTranslateY }],
-            },
-          ]}
-        >
-          <Text style={styles.deliveryPromptTitle}>Que envias?</Text>
-          <Text style={styles.deliveryPromptText}>
-            Inicia un envio y te mostramos opciones cercanas para retiro y entrega.
-          </Text>
-
-          <TouchableOpacity activeOpacity={0.88} style={styles.deliveryPromptButton} onPress={() => openSearchComposer('idle')}>
-            <Ionicons name="search" size={18} color={Theme.colors.black} />
-            <Text style={styles.deliveryPromptButtonText}>Iniciar busqueda</Text>
-          </TouchableOpacity>
-        </Animated.View>
-
         {renderResultsChrome && routeResult && (
           <>
             <Animated.View
@@ -1569,7 +1670,7 @@ export default function AppHomeScreen() {
               ]}
             >
               <TouchableOpacity activeOpacity={0.84} style={styles.resultBackButton} onPress={resetSearchFlow}>
-                <Ionicons name="arrow-back" size={20} color={Theme.colors.text} />
+                <Ionicons name="arrow-back" size={20} color={colors.text} />
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1579,7 +1680,7 @@ export default function AppHomeScreen() {
                 onPress={isResultsStage ? () => openSearchComposer('results') : undefined}
               >
                 <View style={styles.routeSummaryRow}>
-                  <Ionicons name="locate" size={15} color={Theme.colors.text} />
+                  <Ionicons name="locate" size={15} color={colors.text} />
                   <Text style={styles.routeSummaryText} numberOfLines={1}>{routeResult.originLabel}</Text>
                   <View style={styles.routeSummaryBadge}>
                     <Text style={styles.routeSummaryBadgeText}>{routeResult.distanceLabel}</Text>
@@ -1589,7 +1690,7 @@ export default function AppHomeScreen() {
                 <View style={styles.routeSummaryDivider} />
 
                 <View style={styles.routeSummaryRow}>
-                  <Ionicons name="flag" size={15} color={Theme.colors.lime} />
+                  <Ionicons name="flag" size={15} color={colors.lime} />
                   <Text style={styles.routeSummaryText} numberOfLines={1}>{routeResult.destinationLabel}</Text>
                   <View style={styles.routeSummaryBadge}>
                     <Text style={styles.routeSummaryBadgeText}>{routeResult.durationLabel}</Text>
@@ -1630,7 +1731,7 @@ export default function AppHomeScreen() {
 
               {serviceMessage && (
                 <View style={styles.serviceBanner}>
-                  <Ionicons name="information-circle" size={16} color={Theme.colors.warning} />
+                  <Ionicons name="information-circle" size={16} color={colors.warning} />
                   <Text style={styles.serviceBannerText}>{serviceMessage}</Text>
                 </View>
               )}
@@ -1662,16 +1763,16 @@ export default function AppHomeScreen() {
 
                       <View style={styles.trackingChipRow}>
                         <View style={styles.trackingChip}>
-                          <Ionicons name="cube-outline" size={13} color={Theme.colors.lime} />
+                          <Ionicons name="cube-outline" size={13} color={colors.lime} />
                           <Text style={styles.trackingChipText}>{formatDeliveryWeight(deliveryDraft.estimatedWeight)}</Text>
                         </View>
                         <View style={styles.trackingChip}>
-                          <Ionicons name="resize-outline" size={13} color={Theme.colors.lime} />
+                          <Ionicons name="resize-outline" size={13} color={colors.lime} />
                           <Text style={styles.trackingChipText}>{getDeliverySizeLabel(deliveryDraft.estimatedSize)}</Text>
                         </View>
                       </View>
 
-                      <TouchableOpacity style={styles.trackingGhostBtn} activeOpacity={0.8} onPress={closeSearchComposer}>
+                      <TouchableOpacity style={styles.trackingGhostBtn} activeOpacity={0.8} onPress={handleCancelSearch}>
                         <Text style={styles.trackingGhostBtnText}>Cancelar búsqueda</Text>
                       </TouchableOpacity>
                     </View>
@@ -1680,35 +1781,47 @@ export default function AppHomeScreen() {
                   {deliveryRequestStatus === 'accepted' && (
                     <View style={[styles.trackingPanel, styles.trackingPanelAccepted]}>
                       <View style={styles.trackingPanelHeader}>
-                        <View style={styles.trackingDriverAvatar}>
-                          <Text style={styles.trackingDriverAvatarText}>
-                            {(assignedDriver?.name ?? 'C').charAt(0).toUpperCase()}
-                          </Text>
-                        </View>
-                        <View style={styles.trackingPanelCopy}>
-                          <Text style={[styles.trackingPanelEyebrow, styles.trackingPanelEyebrowSuccess]}>
-                            ¡Conductor asignado!
-                          </Text>
-                          <Text style={styles.trackingDriverName}>{assignedDriver?.name ?? 'En camino'}</Text>
-                          {assignedDriver?.rating !== null && assignedDriver?.rating !== undefined && (
-                            <View style={styles.trackingDriverRatingRow}>
-                              <Ionicons name="star" size={11} color={Theme.colors.lime} />
-                              <Text style={styles.trackingDriverRatingText}>{assignedDriver.rating.toFixed(1)}</Text>
-                              {assignedDriver.ratingCount > 0 && (
-                                <Text style={styles.trackingDriverRatingCount}>
-                                  ({assignedDriver.ratingCount} viajes)
-                                </Text>
-                              )}
+                        <TouchableOpacity
+                          style={styles.trackingDriverTap}
+                          activeOpacity={0.7}
+                          onPress={openDriverProfile}
+                          disabled={!assignedDriver?.id}
+                        >
+                          <View style={styles.trackingDriverAvatar}>
+                            <Text style={styles.trackingDriverAvatarText}>
+                              {(assignedDriver?.name ?? 'C').charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <View style={styles.trackingPanelCopy}>
+                            <Text style={[styles.trackingPanelEyebrow, styles.trackingPanelEyebrowSuccess]}>
+                              ¡Conductor asignado!
+                            </Text>
+                            <View style={styles.trackingDriverNameRow}>
+                              <Text style={styles.trackingDriverName}>{assignedDriver?.name ?? 'En camino'}</Text>
+                              {assignedDriver?.id ? (
+                                <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+                              ) : null}
                             </View>
-                          )}
-                        </View>
+                            {assignedDriver?.rating !== null && assignedDriver?.rating !== undefined && (
+                              <View style={styles.trackingDriverRatingRow}>
+                                <Ionicons name="star" size={11} color={colors.lime} />
+                                <Text style={styles.trackingDriverRatingText}>{assignedDriver.rating.toFixed(1)}</Text>
+                                {assignedDriver.ratingCount > 0 && (
+                                  <Text style={styles.trackingDriverRatingCount}>
+                                    ({assignedDriver.ratingCount} viajes)
+                                  </Text>
+                                )}
+                              </View>
+                            )}
+                          </View>
+                        </TouchableOpacity>
                         {assignedDriver?.phone && (
                           <TouchableOpacity
                             style={styles.trackingPhoneBtn}
                             activeOpacity={0.8}
                             onPress={() => Linking.openURL(`tel:${assignedDriver.phone}`)}
                           >
-                            <Ionicons name="call" size={16} color={Theme.colors.black} />
+                            <Ionicons name="call" size={16} color={colors.black} />
                             <Text style={styles.trackingPhoneBtnText}>Llamar</Text>
                           </TouchableOpacity>
                         )}
@@ -1718,16 +1831,16 @@ export default function AppHomeScreen() {
 
                       <View style={styles.trackingChipRow}>
                         <View style={styles.trackingChip}>
-                          <Ionicons name="cube-outline" size={13} color={Theme.colors.lime} />
+                          <Ionicons name="cube-outline" size={13} color={colors.lime} />
                           <Text style={styles.trackingChipText}>{formatDeliveryWeight(deliveryDraft.estimatedWeight)}</Text>
                         </View>
                         <View style={styles.trackingChip}>
-                          <Ionicons name="resize-outline" size={13} color={Theme.colors.lime} />
+                          <Ionicons name="resize-outline" size={13} color={colors.lime} />
                           <Text style={styles.trackingChipText}>{getDeliverySizeLabel(deliveryDraft.estimatedSize)}</Text>
                         </View>
                         {deliveryDraft.deliveryDetails ? (
                           <View style={[styles.trackingChip, { flex: 1 }]}>
-                            <Ionicons name="location-outline" size={13} color={Theme.colors.lime} />
+                            <Ionicons name="location-outline" size={13} color={colors.lime} />
                             <Text style={[styles.trackingChipText, { flex: 1 }]} numberOfLines={1}>
                               {deliveryDraft.deliveryDetails}
                             </Text>
@@ -1737,10 +1850,68 @@ export default function AppHomeScreen() {
                     </View>
                   )}
 
+                  {deliveryRequestStatus === 'picked_up' && (
+                    <View style={[styles.trackingPanel, styles.trackingPanelAccepted]}>
+                      <View style={styles.trackingPanelHeader}>
+                        <TouchableOpacity
+                          style={styles.trackingDriverTap}
+                          activeOpacity={0.7}
+                          onPress={openDriverProfile}
+                          disabled={!assignedDriver?.id}
+                        >
+                          <View style={styles.trackingDriverAvatar}>
+                            <Text style={styles.trackingDriverAvatarText}>
+                              {(assignedDriver?.name ?? 'C').charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <View style={styles.trackingPanelCopy}>
+                            <Text style={[styles.trackingPanelEyebrow, styles.trackingPanelEyebrowSuccess]}>
+                              Paquete retirado
+                            </Text>
+                            <View style={styles.trackingDriverNameRow}>
+                              <Text style={styles.trackingDriverName}>{assignedDriver?.name ?? 'Conductor'}</Text>
+                              {assignedDriver?.id ? (
+                                <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+                              ) : null}
+                            </View>
+                            <Text style={[styles.trackingPanelEyebrow, { marginTop: 3, textTransform: 'none', letterSpacing: 0, color: colors.textMuted }]}>
+                              En camino a la entrega
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                        {assignedDriver?.phone && (
+                          <TouchableOpacity
+                            style={styles.trackingPhoneBtn}
+                            activeOpacity={0.8}
+                            onPress={() => Linking.openURL(`tel:${assignedDriver.phone}`)}
+                          >
+                            <Ionicons name="call" size={16} color={colors.black} />
+                            <Text style={styles.trackingPhoneBtnText}>Llamar</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  )}
+
+                  {deliveryRequestStatus === 'delivered' && (
+                    <View style={[styles.trackingPanel, styles.trackingPanelAccepted]}>
+                      <View style={styles.trackingNoCoverageTop}>
+                        <Ionicons name="checkmark-circle" size={36} color={colors.lime} />
+                        <Text style={styles.trackingNoCoverageTitle}>¡Entregado!</Text>
+                        <Text style={styles.trackingNoCoverageBody}>
+                          Tu paquete llegó a destino.
+                        </Text>
+                      </View>
+                      <TouchableOpacity style={styles.trackingPrimaryBtn} activeOpacity={0.85} onPress={resetSearchFlow}>
+                        <Text style={styles.trackingPrimaryBtnText}>Listo</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
                   {deliveryRequestStatus === 'no_coverage' && (
                     <View style={styles.trackingPanel}>
                       <View style={styles.trackingNoCoverageTop}>
-                        <Ionicons name="alert-circle" size={30} color={Theme.colors.warning} />
+                        <Ionicons name="alert-circle" size={30} color={colors.warning} />
                         <Text style={styles.trackingNoCoverageTitle}>Sin cobertura disponible</Text>
                         <Text style={styles.trackingNoCoverageBody}>
                           No encontramos conductores para esta ruta. Intentá con otro destino o en otro momento.
@@ -1764,23 +1935,23 @@ export default function AppHomeScreen() {
                     </View>
                     <View style={styles.deliveryRouteLine} />
                     <View style={styles.deliveryRouteRow}>
-                      <Ionicons name="location" size={14} color={Theme.colors.lime} />
+                      <Ionicons name="location" size={14} color={colors.lime} />
                       <Text style={styles.deliveryRouteLabel} numberOfLines={1}>{routeResult.destinationLabel}</Text>
                       <Text style={styles.deliveryRouteMeta}>{routeResult.durationLabel}</Text>
                     </View>
                   </View>
 
                   <TouchableOpacity activeOpacity={0.88} style={styles.deliveryStartBtn} onPress={handleOfferCTA}>
-                    <Ionicons name="cube-outline" size={18} color={Theme.colors.black} />
+                    <Ionicons name="cube-outline" size={18} color={colors.black} />
                     <Text style={styles.deliveryStartBtnText}>Configurar entrega</Text>
-                    <Ionicons name="arrow-forward" size={16} color={Theme.colors.black} />
+                    <Ionicons name="arrow-forward" size={16} color={colors.black} />
                   </TouchableOpacity>
                 </>
               ) : isResultsStage ? (
                 <>
                   <TouchableOpacity activeOpacity={0.86} style={styles.promoRow}>
                     <Text style={styles.promoText}>Tenes un codigo promocional? Usalo</Text>
-                    <Ionicons name="chevron-forward" size={16} color={Theme.colors.textMuted} />
+                    <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
                   </TouchableOpacity>
 
                   <View style={styles.offerList}>
@@ -1795,14 +1966,14 @@ export default function AppHomeScreen() {
                           onPress={() => setSelectedOfferId(offer.id)}
                         >
                           <View style={styles.offerIconWrap}>
-                            <Ionicons name={offer.icon} size={18} color={Theme.colors.lime} />
+                            <Ionicons name={offer.icon} size={18} color={colors.lime} />
                           </View>
 
                           <View style={styles.offerCopy}>
                             <View style={styles.offerHeaderRow}>
                               <Text style={styles.offerTitle}>{offer.title}</Text>
                               <View style={styles.offerSeatBadge}>
-                                <Ionicons name="person" size={11} color={Theme.colors.textMuted} />
+                                <Ionicons name="person" size={11} color={colors.textMuted} />
                                 <Text style={styles.offerSeatBadgeText}>{offer.seatsLabel}</Text>
                               </View>
                             </View>
@@ -1818,7 +1989,7 @@ export default function AppHomeScreen() {
                             <Ionicons
                               name={isActive ? 'checkmark' : 'add'}
                               size={15}
-                              color={isActive ? Theme.colors.black : Theme.colors.text}
+                              color={isActive ? colors.black : colors.text}
                             />
                           </View>
                         </TouchableOpacity>
@@ -1835,8 +2006,8 @@ export default function AppHomeScreen() {
                     <Switch
                       value={autoAccept}
                       onValueChange={setAutoAccept}
-                      thumbColor={autoAccept ? Theme.colors.black : Theme.colors.text}
-                      trackColor={{ false: Theme.colors.surfaceMuted, true: Theme.colors.lime }}
+                      thumbColor={autoAccept ? colors.black : colors.text}
+                      trackColor={{ false: colors.surfaceMuted, true: colors.lime }}
                     />
                   </View>
 
@@ -1851,8 +2022,11 @@ export default function AppHomeScreen() {
             </Animated.View>
           </>
         )}
+      </View>
+        </>
+      )}
 
-        <Modal
+      <Modal
           visible={searchStage === 'editing'}
           animationType="slide"
           onRequestClose={closeSearchComposer}
@@ -1860,7 +2034,7 @@ export default function AppHomeScreen() {
           <View style={styles.wizardScreen}>
             <View style={[styles.wizardScreenHeader, { paddingTop: topInset + 8 }]}>
               <TouchableOpacity style={styles.wizardBackBtn} onPress={closeSearchComposer} activeOpacity={0.8}>
-                <Ionicons name="arrow-back" size={20} color={Theme.colors.text} />
+                <Ionicons name="arrow-back" size={20} color={colors.text} />
               </TouchableOpacity>
               <Text style={styles.wizardHeaderTitle}>{searchComposerTitle}</Text>
               <View style={styles.wizardHeaderSpacer} />
@@ -1927,7 +2101,7 @@ export default function AppHomeScreen() {
                       <View style={styles.routeStepArea}>
                         <View style={styles.routeInputsStack}>
                           <View style={[styles.routeInputCard, focusedField === 'origin' && styles.routeInputCardActive]}>
-                            <Ionicons name="locate" size={16} color={Theme.colors.textMuted} />
+                            <Ionicons name="locate" size={16} color={colors.textMuted} />
                             <Pressable style={styles.routeInputCopy} onPress={() => originInputRef.current?.focus()}>
                               <Text style={styles.routeInputLabel}>De</Text>
                               <TextInput
@@ -1935,9 +2109,9 @@ export default function AppHomeScreen() {
                                 value={originInput}
                                 onChangeText={updateOriginValue}
                                 placeholder="Tu ubicacion actual"
-                                placeholderTextColor={Theme.colors.textMuted}
+                                placeholderTextColor={colors.textMuted}
                                 style={styles.routeInputText}
-                                selectionColor={Theme.colors.lime}
+                                selectionColor={colors.lime}
                                 onFocus={() => handleFieldFocus('origin')}
                                 onBlur={() => handleFieldBlur('origin')}
                                 returnKeyType="next"
@@ -1951,12 +2125,12 @@ export default function AppHomeScreen() {
                               setOriginSelection(null)
                               setOriginInput(currentLocationLabel)
                             }}>
-                              <Ionicons name="navigate" size={16} color={Theme.colors.text} />
+                              <Ionicons name="navigate" size={16} color={colors.text} />
                             </TouchableOpacity>
                           </View>
 
                           <View style={[styles.routeInputCard, focusedField === 'destination' && styles.routeInputCardActive]}>
-                            <Ionicons name="search" size={16} color={Theme.colors.textMuted} />
+                            <Ionicons name="search" size={16} color={colors.textMuted} />
                             <Pressable style={styles.routeInputCopy} onPress={() => destinationInputRef.current?.focus()}>
                               <Text style={styles.routeInputLabel}>A</Text>
                               <TextInput
@@ -1964,9 +2138,9 @@ export default function AppHomeScreen() {
                                 value={destinationInput}
                                 onChangeText={updateDestinationValue}
                                 placeholder={destinationPlaceholder}
-                                placeholderTextColor={Theme.colors.textMuted}
+                                placeholderTextColor={colors.textMuted}
                                 style={styles.routeInputText}
-                                selectionColor={Theme.colors.lime}
+                                selectionColor={colors.lime}
                                 returnKeyType={isDeliveryMode ? 'next' : 'search'}
                                 onFocus={() => handleFieldFocus('destination')}
                                 onBlur={() => handleFieldBlur('destination')}
@@ -1990,7 +2164,7 @@ export default function AppHomeScreen() {
                                 void submitSearch()
                               }}
                             >
-                              <Ionicons name={isDeliveryMode ? 'arrow-forward' : 'sparkles'} size={16} color={Theme.colors.text} />
+                              <Ionicons name={isDeliveryMode ? 'arrow-forward' : 'sparkles'} size={16} color={colors.text} />
                             </TouchableOpacity>
                           </View>
                         </View>
@@ -2002,7 +2176,7 @@ export default function AppHomeScreen() {
                             <View style={styles.suggestionsCard}>
                               {suggestionsLoading ? (
                                 <View style={styles.suggestionLoadingRow}>
-                                  <ActivityIndicator color={Theme.colors.lime} size="small" />
+                                  <ActivityIndicator color={colors.lime} size="small" />
                                   <Text style={styles.suggestionLoadingText}>Buscando lugares...</Text>
                                 </View>
                               ) : activeSuggestions.length > 0 ? (
@@ -2019,7 +2193,7 @@ export default function AppHomeScreen() {
                                       onPress={() => handleSuggestionPress(suggestion)}
                                     >
                                       <View style={styles.suggestionIconWrap}>
-                                        <Ionicons name="location-outline" size={16} color={Theme.colors.lime} />
+                                        <Ionicons name="location-outline" size={16} color={colors.lime} />
                                       </View>
 
                                       <View style={styles.suggestionCopy}>
@@ -2048,7 +2222,7 @@ export default function AppHomeScreen() {
                       <View style={styles.deliverySection}>
                         <View style={styles.deliverySectionHeader}>
                           <View style={styles.deliverySectionBadge}>
-                            <Ionicons name="cube" size={15} color={Theme.colors.black} />
+                            <Ionicons name="cube" size={15} color={colors.black} />
                           </View>
                           <View style={styles.deliverySectionCopy}>
                             <Text style={styles.deliverySectionTitle}>Datos del paquete</Text>
@@ -2060,7 +2234,7 @@ export default function AppHomeScreen() {
 
                         <View style={styles.deliveryWizardSummaryCard}>
                           <View style={styles.deliveryWizardSummaryRow}>
-                            <Ionicons name="flag" size={15} color={Theme.colors.lime} />
+                            <Ionicons name="flag" size={15} color={colors.lime} />
                             <Text style={styles.deliveryWizardSummaryText} numberOfLines={1}>
                               {destinationInput.trim() || 'Destino pendiente'}
                             </Text>
@@ -2074,9 +2248,9 @@ export default function AppHomeScreen() {
                               value={deliveryDraft.estimatedWeight}
                               onChangeText={value => patchDeliveryDraft({ estimatedWeight: value })}
                               placeholder="Ej. 3.5"
-                              placeholderTextColor={Theme.colors.textMuted}
+                              placeholderTextColor={colors.textMuted}
                               keyboardType="decimal-pad"
-                              selectionColor={Theme.colors.lime}
+                              selectionColor={colors.lime}
                               style={styles.deliveryFieldInput}
                             />
                             <Text style={styles.deliveryFieldHint}>Ingresa el peso total aproximado en kilos.</Text>
@@ -2113,8 +2287,8 @@ export default function AppHomeScreen() {
                               value={deliveryDraft.deliveryAddress}
                               onChangeText={value => patchDeliveryDraft({ deliveryAddress: value })}
                               placeholder="Piso, dpto, local o una referencia visual"
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
+                              placeholderTextColor={colors.textMuted}
+                              selectionColor={colors.lime}
                               multiline
                               textAlignVertical="top"
                               style={styles.deliveryFieldTextarea}
@@ -2127,8 +2301,8 @@ export default function AppHomeScreen() {
                               value={deliveryDraft.notes}
                               onChangeText={value => patchDeliveryDraft({ notes: value })}
                               placeholder="Fragil, no volcar, contacto alternativo o instrucciones"
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
+                              placeholderTextColor={colors.textMuted}
+                              selectionColor={colors.lime}
                               multiline
                               textAlignVertical="top"
                               style={styles.deliveryFieldTextarea}
@@ -2142,19 +2316,19 @@ export default function AppHomeScreen() {
                       <View style={styles.deliverySection}>
                         <View style={styles.deliverySectionHeader}>
                           <View style={styles.deliverySectionBadge}>
-                            <Ionicons name="call" size={15} color={Theme.colors.black} />
+                            <Ionicons name="call" size={15} color={colors.black} />
                           </View>
                           <View style={styles.deliverySectionCopy}>
-                            <Text style={styles.deliverySectionTitle}>Retiro y recepcion</Text>
+                            <Text style={styles.deliverySectionTitle}>Recepcion</Text>
                             <Text style={styles.deliverySectionSubtitle}>
-                              Estos datos los usa el conductor para coordinar la entrega sin demoras.
+                              El conductor va a retirar desde tu ubicacion actual. Solo necesitamos saber quien recibe.
                             </Text>
                           </View>
                         </View>
 
                         <View style={styles.deliveryWizardSummaryCard}>
                           <View style={styles.deliveryWizardSummaryRow}>
-                            <Ionicons name="cube" size={15} color={Theme.colors.lime} />
+                            <Ionicons name="cube" size={15} color={colors.lime} />
                             <Text style={styles.deliveryWizardSummaryText} numberOfLines={1}>
                               {formatDeliveryWeight(deliveryDraft.estimatedWeight) || 'Peso pendiente'}
                             </Text>
@@ -2170,7 +2344,7 @@ export default function AppHomeScreen() {
                               style={styles.datePickerButton}
                               onPress={() => setShowDatePicker(true)}
                             >
-                              <Ionicons name="calendar-outline" size={16} color={deliveryDraft.preferredDate ? Theme.colors.lime : Theme.colors.textMuted} />
+                              <Ionicons name="calendar-outline" size={16} color={deliveryDraft.preferredDate ? colors.lime : colors.textMuted} />
                               <Text style={[styles.datePickerButtonText, !!deliveryDraft.preferredDate && styles.datePickerButtonTextActive]}>
                                 {deliveryDraft.preferredDate
                                   ? new Date(`${deliveryDraft.preferredDate}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })
@@ -2181,7 +2355,7 @@ export default function AppHomeScreen() {
                                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                   onPress={() => patchDeliveryDraft({ preferredDate: null })}
                                 >
-                                  <Ionicons name="close-circle" size={16} color={Theme.colors.textMuted} />
+                                  <Ionicons name="close-circle" size={16} color={colors.textMuted} />
                                 </TouchableOpacity>
                               )}
                             </TouchableOpacity>
@@ -2193,22 +2367,22 @@ export default function AppHomeScreen() {
                                 <Calendar
                                   minDate={new Date().toISOString().split('T')[0]}
                                   markedDates={deliveryDraft.preferredDate
-                                    ? { [deliveryDraft.preferredDate]: { selected: true, selectedColor: Theme.colors.lime } }
+                                    ? { [deliveryDraft.preferredDate]: { selected: true, selectedColor: colors.lime } }
                                     : {}}
                                   onDayPress={day => {
                                     patchDeliveryDraft({ preferredDate: day.dateString })
                                     setShowDatePicker(false)
                                   }}
                                   theme={{
-                                    calendarBackground: Theme.colors.surfaceElevated,
-                                    dayTextColor: Theme.colors.text,
-                                    textDisabledColor: Theme.colors.textMuted,
-                                    monthTextColor: Theme.colors.text,
-                                    arrowColor: Theme.colors.lime,
-                                    todayTextColor: Theme.colors.lime,
-                                    selectedDayTextColor: Theme.colors.black,
-                                    selectedDayBackgroundColor: Theme.colors.lime,
-                                    textSectionTitleColor: Theme.colors.textMuted,
+                                    calendarBackground: colors.surfaceElevated,
+                                    dayTextColor: colors.text,
+                                    textDisabledColor: colors.textMuted,
+                                    monthTextColor: colors.text,
+                                    arrowColor: colors.lime,
+                                    todayTextColor: colors.lime,
+                                    selectedDayTextColor: colors.black,
+                                    selectedDayBackgroundColor: colors.lime,
+                                    textSectionTitleColor: colors.textMuted,
                                   }}
                                 />
                                 <TouchableOpacity
@@ -2222,50 +2396,13 @@ export default function AppHomeScreen() {
                           </View>
 
                           <View style={styles.deliveryFieldCard}>
-                            <Text style={styles.deliveryFieldLabel}>Dirección exacta de retiro *</Text>
-                            <TextInput
-                              value={deliveryDraft.pickupAddress}
-                              onChangeText={value => patchDeliveryDraft({ pickupAddress: value })}
-                              placeholder="Calle, número, piso/depto"
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
-                              style={styles.deliveryFieldInput}
-                            />
-                          </View>
-
-                          <View style={styles.deliveryFieldCard}>
-                            <Text style={styles.deliveryFieldLabel}>Nombre contacto en origen *</Text>
-                            <TextInput
-                              value={deliveryDraft.pickupContactName}
-                              onChangeText={value => patchDeliveryDraft({ pickupContactName: value })}
-                              placeholder={user?.name ?? 'Tu nombre'}
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
-                              style={styles.deliveryFieldInput}
-                            />
-                          </View>
-
-                          <View style={styles.deliveryFieldCard}>
-                            <Text style={styles.deliveryFieldLabel}>Telefono contacto en origen *</Text>
-                            <TextInput
-                              value={deliveryDraft.pickupContactPhone}
-                              onChangeText={value => patchDeliveryDraft({ pickupContactPhone: value })}
-                              placeholder={user?.phone ?? '11 1234-5678'}
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
-                              keyboardType="phone-pad"
-                              style={styles.deliveryFieldInput}
-                            />
-                          </View>
-
-                          <View style={styles.deliveryFieldCard}>
                             <Text style={styles.deliveryFieldLabel}>Datos de entrega *</Text>
                             <TextInput
                               value={deliveryDraft.deliveryDetails}
                               onChangeText={value => patchDeliveryDraft({ deliveryDetails: value })}
                               placeholder="Nombre, telefono, horario o datos de recepcion"
-                              placeholderTextColor={Theme.colors.textMuted}
-                              selectionColor={Theme.colors.lime}
+                              placeholderTextColor={colors.textMuted}
+                              selectionColor={colors.lime}
                               multiline
                               textAlignVertical="top"
                               style={styles.deliveryFieldTextarea}
@@ -2289,7 +2426,7 @@ export default function AppHomeScreen() {
                               <Ionicons
                                 name={deliveryDraft.declarationAccepted ? 'checkmark' : 'add'}
                                 size={15}
-                                color={deliveryDraft.declarationAccepted ? Theme.colors.black : Theme.colors.textMuted}
+                                color={deliveryDraft.declarationAccepted ? colors.black : colors.textMuted}
                               />
                             </View>
 
@@ -2325,7 +2462,7 @@ export default function AppHomeScreen() {
                               setDeliveryFormError(null)
                             }}
                           >
-                            <Ionicons name="location-outline" size={14} color={Theme.colors.textMuted} />
+                            <Ionicons name="location-outline" size={14} color={colors.textMuted} />
                             <Text style={styles.quickPlaceChipText}>{place.label}</Text>
                           </TouchableOpacity>
                         ))}
@@ -2338,7 +2475,7 @@ export default function AppHomeScreen() {
                       <Ionicons
                         name={deliveryFormError ? 'alert-circle' : 'information-circle'}
                         size={15}
-                        color={deliveryFormError ? Theme.colors.danger : Theme.colors.warning}
+                        color={deliveryFormError ? colors.danger : colors.warning}
                       />
                       <Text style={styles.composerNoticeText}>{deliveryFormError || serviceMessage}</Text>
                     </View>
@@ -2352,7 +2489,7 @@ export default function AppHomeScreen() {
                         onPress={goToPreviousDeliveryWizardStep}
                         disabled={routeLoading}
                       >
-                        <Ionicons name="arrow-back" size={16} color={Theme.colors.text} />
+                        <Ionicons name="arrow-back" size={16} color={colors.text} />
                         <Text style={styles.deliveryWizardBackButtonText}>Atras</Text>
                       </TouchableOpacity>
 
@@ -2367,13 +2504,13 @@ export default function AppHomeScreen() {
                         onPress={handleDeliveryWizardNextStep}
                       >
                         {routeLoading ? (
-                          <ActivityIndicator color={Theme.colors.black} size="small" />
+                          <ActivityIndicator color={colors.black} size="small" />
                         ) : (
                           <>
                             <Ionicons
                               name={deliveryWizardStep === 'contacts' ? 'navigate-circle' : 'arrow-forward-circle'}
                               size={18}
-                              color={Theme.colors.black}
+                              color={colors.black}
                             />
                             <Text style={styles.submitRouteButtonText}>{submitRouteLabel}</Text>
                           </>
@@ -2397,13 +2534,13 @@ export default function AppHomeScreen() {
                       }}
                     >
                       {routeLoading ? (
-                        <ActivityIndicator color={Theme.colors.black} size="small" />
+                        <ActivityIndicator color={colors.black} size="small" />
                       ) : (
                         <>
                           <Ionicons
                             name={isDeliveryMode ? 'arrow-forward-circle' : 'navigate-circle'}
                             size={18}
-                            color={Theme.colors.black}
+                            color={colors.black}
                           />
                           <Text style={styles.submitRouteButtonText}>{submitRouteLabel}</Text>
                         </>
@@ -2414,7 +2551,6 @@ export default function AppHomeScreen() {
             </KeyboardAvoidingView>
           </View>
         </Modal>
-      </View>
 
       <AppDrawer
         activePath={pathname}
@@ -2429,108 +2565,15 @@ export default function AppHomeScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 20,
     elevation: 20,
-  },
-  topBar: {
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    zIndex: 30,
-    elevation: 30,
-  },
-  locationPill: {
-    maxWidth: '76%',
-    minHeight: 48,
-    paddingHorizontal: 14,
-    borderRadius: 22,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Theme.colors.mapOverlay,
-    borderWidth: 1,
-    borderColor: Theme.colors.borderSoft,
-  },
-  locationCopy: {
-    flexShrink: 1,
-  },
-  locationHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Theme.colors.warning,
-  },
-  statusDotActive: {
-    backgroundColor: Theme.colors.lime,
-  },
-  locationText: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.semiBold,
-    fontSize: 11,
-  },
-  locationAddress: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 11,
-    marginTop: 2,
-    flexShrink: 1,
-  },
-  permissionBanner: {
-    marginTop: 12,
-    marginHorizontal: 16,
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: Theme.colors.mapOverlay,
-    borderWidth: 1,
-    borderColor: Theme.colors.borderSoft,
-    zIndex: 30,
-    elevation: 30,
-  },
-  permissionTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 13,
-  },
-  permissionText: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 6,
-  },
-  permissionButton: {
-    alignSelf: 'flex-start',
-    minHeight: 36,
-    marginTop: 12,
-    paddingHorizontal: 14,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
-  },
-  permissionButtonText: {
-    color: Theme.colors.black,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 12,
-  },
-  rightControls: {
-    position: 'absolute',
-    right: 16,
-    gap: 10,
-    zIndex: 30,
-    elevation: 30,
   },
   resultsRightControls: {
     position: 'absolute',
@@ -2545,9 +2588,9 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
     borderWidth: 3,
-    borderColor: Theme.colors.background,
+    borderColor: colors.background,
   },
   searchMarker: {
     minWidth: 36,
@@ -2558,70 +2601,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     borderWidth: 1,
-    borderColor: Theme.colors.borderSoft,
+    borderColor: colors.borderSoft,
     paddingHorizontal: 12,
-    backgroundColor: Theme.colors.mapOverlay,
+    backgroundColor: colors.mapOverlay,
   },
   searchMarkerOrigin: {
     paddingHorizontal: 0,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
   },
   searchMarkerDestination: {
     paddingHorizontal: 0,
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
+    borderColor: colors.lime,
   },
   searchMarkerOffer: {
     minWidth: 68,
   },
   searchMarkerLabel: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
-  },
-  bottomPanel: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingTop: 14,
-    paddingHorizontal: 16,
-    backgroundColor: Theme.colors.background,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderTopWidth: 1,
-    borderColor: Theme.colors.border,
-    zIndex: 30,
-    elevation: 30,
-  },
-  deliveryPromptTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 20,
-    lineHeight: 24,
-  },
-  deliveryPromptText: {
-    color: Theme.colors.textMuted,
-    fontFamily: Theme.fonts.medium,
-    fontSize: 13,
-    lineHeight: 19,
-    marginTop: 8,
-    marginBottom: 14,
-  },
-  deliveryPromptButton: {
-    height: 52,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: Theme.colors.lime,
-  },
-  deliveryPromptButtonText: {
-    color: Theme.colors.black,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 15,
   },
   categories: {
     gap: 8,
@@ -2635,24 +2634,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   categoryActive: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
+    borderColor: colors.lime,
   },
   categoryText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 10,
   },
   categoryTextActive: {
-    color: Theme.colors.black,
+    color: colors.black,
   },
   serviceSubtitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
     marginBottom: 10,
@@ -2664,18 +2663,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: Theme.colors.surfaceMuted,
+    backgroundColor: colors.surfaceMuted,
   },
   searchText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },
   // ── Wizard screen (full-screen modal) ───────────────────────────────────────
   wizardScreen: {
     flex: 1,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
   },
   wizardScreenHeader: {
     flexDirection: 'row',
@@ -2684,7 +2683,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Theme.colors.borderSoft,
+    borderBottomColor: colors.borderSoft,
   },
   wizardBackBtn: {
     width: 40,
@@ -2692,13 +2691,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   wizardHeaderTitle: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 18,
   },
@@ -2734,61 +2733,61 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryWizardProgressPillActive: {
     backgroundColor: '#242c15',
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
   },
   deliveryWizardProgressPillDone: {
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
   },
   deliveryWizardProgressStep: {
-    color: Theme.colors.textSubtle,
+    color: colors.textSubtle,
     fontFamily: Theme.fonts.bold,
     fontSize: 10,
   },
   deliveryWizardProgressStepActive: {
-    color: Theme.colors.lime,
+    color: colors.lime,
   },
   deliveryWizardProgressStepDone: {
-    color: Theme.colors.lime,
+    color: colors.lime,
   },
   deliveryWizardProgressText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
     marginTop: 4,
   },
   deliveryWizardProgressTextActive: {
-    color: Theme.colors.lime,
+    color: colors.lime,
   },
   deliveryWizardProgressTextDone: {
-    color: Theme.colors.text,
+    color: colors.text,
   },
   deliveryWizardIntroCard: {
     marginBottom: 18,
     padding: 14,
     borderRadius: 18,
-    backgroundColor: Theme.colors.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryWizardStepEyebrow: {
-    color: Theme.colors.lime,
+    color: colors.lime,
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
   },
   deliveryWizardStepTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 16,
     marginTop: 6,
   },
   deliveryWizardStepText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 12,
     lineHeight: 18,
@@ -2803,7 +2802,7 @@ const styles = StyleSheet.create({
     elevation: 20,
   },
   suggestionsPopoverTitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
     marginTop: 12,
@@ -2813,9 +2812,9 @@ const styles = StyleSheet.create({
     marginTop: 18,
     padding: 14,
     borderRadius: 18,
-    backgroundColor: Theme.colors.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliverySectionHeader: {
     flexDirection: 'row',
@@ -2829,18 +2828,18 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   deliverySectionCopy: {
     flex: 1,
   },
   deliverySectionTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
   deliverySectionSubtitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     lineHeight: 16,
@@ -2852,7 +2851,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 14,
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
   },
   deliveryWizardSummaryRow: {
     flexDirection: 'row',
@@ -2861,12 +2860,12 @@ const styles = StyleSheet.create({
   },
   deliveryWizardSummaryText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
   },
   deliveryWizardSummaryMeta: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
   },
@@ -2876,32 +2875,32 @@ const styles = StyleSheet.create({
   deliveryFieldCard: {
     padding: 12,
     borderRadius: 16,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryFieldLabel: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
     marginBottom: 8,
   },
   deliveryFieldInput: {
     minHeight: 22,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
     paddingVertical: 0,
   },
   deliveryFieldHint: {
-    color: Theme.colors.textSubtle,
+    color: colors.textSubtle,
     fontFamily: Theme.fonts.medium,
     fontSize: 10,
     marginTop: 6,
   },
   deliveryFieldTextarea: {
     minHeight: 60,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 13,
     lineHeight: 18,
@@ -2915,18 +2914,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   datePickerButtonText: {
     flex: 1,
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.body,
     fontSize: 14,
   },
   datePickerButtonTextActive: {
-    color: Theme.colors.text,
+    color: colors.text,
   },
   datePickerIosDone: {
     alignSelf: 'flex-end',
@@ -2934,10 +2933,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   datePickerIosDoneText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 14,
   },
@@ -2951,31 +2950,31 @@ const styles = StyleSheet.create({
     minHeight: 74,
     padding: 12,
     borderRadius: 16,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliverySizeCardActive: {
     backgroundColor: '#242c15',
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
   },
   deliverySizeTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
   },
   deliverySizeTitleActive: {
-    color: Theme.colors.lime,
+    color: colors.lime,
   },
   deliverySizeSubtitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 10,
     lineHeight: 14,
     marginTop: 5,
   },
   deliverySizeSubtitleActive: {
-    color: Theme.colors.text,
+    color: colors.text,
   },
   deliveryDeclarationRow: {
     padding: 12,
@@ -2983,12 +2982,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 12,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryDeclarationRowActive: {
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
   },
   deliveryDeclarationCheck: {
     width: 28,
@@ -2996,24 +2995,24 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryDeclarationCheckActive: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
+    borderColor: colors.lime,
   },
   deliveryDeclarationCopy: {
     flex: 1,
   },
   deliveryDeclarationTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
   },
   deliveryDeclarationText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     lineHeight: 16,
@@ -3026,25 +3025,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: Theme.colors.surfaceMuted,
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   routeInputCardActive: {
-    borderColor: Theme.colors.lime,
-    backgroundColor: Theme.colors.surfaceElevated,
+    borderColor: colors.lime,
+    backgroundColor: colors.surfaceElevated,
   },
   routeInputCopy: {
     flex: 1,
   },
   routeInputLabel: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 11,
     marginBottom: 3,
   },
   routeInputText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
     paddingVertical: 0,
@@ -3055,14 +3054,14 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
   },
   suggestionsCard: {
     borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   suggestionsScroll: {
     maxHeight: 272,
@@ -3075,7 +3074,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   suggestionLoadingText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 12,
   },
@@ -3086,7 +3085,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Theme.colors.border,
+    borderBottomColor: colors.border,
   },
   suggestionIconWrap: {
     width: 34,
@@ -3094,36 +3093,36 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
   },
   suggestionCopy: {
     flex: 1,
   },
   suggestionTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 13,
   },
   suggestionSubtitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     marginTop: 3,
   },
   suggestionDistance: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 11,
   },
   suggestionEmptyText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 12,
     paddingHorizontal: 14,
     paddingVertical: 16,
   },
   quickPlacesTitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
     marginTop: 18,
@@ -3140,12 +3139,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   quickPlaceChipText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
   },
@@ -3160,7 +3159,7 @@ const styles = StyleSheet.create({
   },
   composerNoticeText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     lineHeight: 16,
@@ -3173,13 +3172,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   submitRouteButtonDisabled: {
     opacity: 0.5,
   },
   submitRouteButtonText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },
@@ -3197,12 +3196,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryWizardBackButtonText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -3225,9 +3224,9 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.mapOverlay,
+    backgroundColor: colors.mapOverlay,
     borderWidth: 1,
-    borderColor: Theme.colors.borderSoft,
+    borderColor: colors.borderSoft,
     zIndex: 2,
   },
   routeSummaryCard: {
@@ -3235,9 +3234,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: Theme.colors.mapOverlay,
+    backgroundColor: colors.mapOverlay,
     borderWidth: 1,
-    borderColor: Theme.colors.borderSoft,
+    borderColor: colors.borderSoft,
   },
   routeSummaryRow: {
     flexDirection: 'row',
@@ -3246,7 +3245,7 @@ const styles = StyleSheet.create({
   },
   routeSummaryText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 13,
   },
@@ -3256,16 +3255,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surfaceMuted,
+    backgroundColor: colors.surfaceMuted,
   },
   routeSummaryBadgeText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.bold,
     fontSize: 10,
   },
   routeSummaryDivider: {
     height: 1,
-    backgroundColor: Theme.colors.border,
+    backgroundColor: colors.border,
     marginVertical: 10,
     marginLeft: 24,
   },
@@ -3278,9 +3277,9 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 16,
     paddingTop: 10,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
     borderTopWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
     zIndex: 40,
     elevation: 40,
   },
@@ -3289,7 +3288,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 4,
     borderRadius: 2,
-    backgroundColor: Theme.colors.border,
+    backgroundColor: colors.border,
     marginBottom: 12,
   },
   serviceBanner: {
@@ -3303,7 +3302,7 @@ const styles = StyleSheet.create({
   },
   serviceBannerText: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     lineHeight: 16,
@@ -3312,9 +3311,9 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 20,
     marginBottom: 10,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   trackingPanelAccepted: {
     backgroundColor: '#161F16',
@@ -3324,6 +3323,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
+  },
+  trackingDriverTap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  trackingDriverNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   trackingPulseWrap: {
     width: 44,
@@ -3337,29 +3347,29 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     borderWidth: 2,
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
   },
   trackingPulseCore: {
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   trackingPanelCopy: {
     flex: 1,
   },
   trackingPanelEyebrow: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.bold,
     fontSize: 10,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
   trackingPanelEyebrowSuccess: {
-    color: Theme.colors.success,
+    color: colors.success,
   },
   trackingPanelTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
     marginTop: 3,
@@ -3367,7 +3377,7 @@ const styles = StyleSheet.create({
   },
   trackingDivider: {
     height: 1,
-    backgroundColor: Theme.colors.border,
+    backgroundColor: colors.border,
     marginVertical: 14,
   },
   trackingChipRow: {
@@ -3382,10 +3392,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 7,
     borderRadius: 10,
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
   },
   trackingChipText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
   },
@@ -3396,10 +3406,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   trackingGhostBtnText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 13,
   },
@@ -3409,15 +3419,15 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   trackingDriverAvatarText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 20,
   },
   trackingDriverName: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
     marginTop: 2,
@@ -3429,12 +3439,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   trackingDriverRatingText: {
-    color: Theme.colors.lime,
+    color: colors.lime,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
   },
   trackingDriverRatingCount: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
   },
@@ -3445,10 +3455,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
     borderRadius: 12,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   trackingPhoneBtnText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
   },
@@ -3458,14 +3468,14 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   trackingNoCoverageTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
     textAlign: 'center',
     marginTop: 2,
   },
   trackingNoCoverageBody: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 12,
     textAlign: 'center',
@@ -3477,10 +3487,10 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   trackingPrimaryBtnText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -3488,9 +3498,9 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 18,
     marginBottom: 12,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   deliveryRouteRow: {
     flexDirection: 'row',
@@ -3501,24 +3511,24 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Theme.colors.textMuted,
+    backgroundColor: colors.textMuted,
     marginHorizontal: 3,
   },
   deliveryRouteLine: {
     width: 1,
     height: 14,
-    backgroundColor: Theme.colors.border,
+    backgroundColor: colors.border,
     marginLeft: 6,
     marginVertical: 3,
   },
   deliveryRouteLabel: {
     flex: 1,
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 13,
   },
   deliveryRouteMeta: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
   },
@@ -3530,11 +3540,11 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: 16,
     marginBottom: 4,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   deliveryStartBtnText: {
     flex: 1,
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 16,
     textAlign: 'center',
@@ -3547,10 +3557,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
   },
   promoText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
   },
@@ -3565,12 +3575,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   offerCardActive: {
-    borderColor: Theme.colors.lime,
+    borderColor: colors.lime,
     backgroundColor: '#242c15',
   },
   offerIconWrap: {
@@ -3579,7 +3589,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
   },
   offerCopy: {
     flex: 1,
@@ -3590,7 +3600,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   offerTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -3601,15 +3611,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
   },
   offerSeatBadgeText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
   },
   offerSubtitle: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
     marginTop: 4,
@@ -3620,12 +3630,12 @@ const styles = StyleSheet.create({
     marginRight: 2,
   },
   offerPrice: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
   offerEta: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 10,
     marginTop: 4,
@@ -3637,13 +3647,13 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.backgroundDeep,
+    backgroundColor: colors.backgroundDeep,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
   },
   offerSelectorActive: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
+    borderColor: colors.lime,
   },
   autoAcceptRow: {
     minHeight: 62,
@@ -3654,19 +3664,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
   },
   autoAcceptCopy: {
     flex: 1,
   },
   autoAcceptTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 12,
     lineHeight: 17,
   },
   autoAcceptText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 10,
     marginTop: 4,
@@ -3682,10 +3692,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   findOffersButtonText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },

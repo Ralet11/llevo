@@ -6,6 +6,7 @@ import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
 import { IconButton } from '../../components/ui/IconButton'
 import { Theme } from '../../constants/theme'
+import { themedStyles } from '../../lib/theme'
 import type { DriverMode } from '../../lib/auth'
 import { useAuth } from '../../lib/auth'
 import { DRIVER_MODE_OPTIONS, getDriverModeMeta } from '../../lib/driver'
@@ -91,7 +92,7 @@ export default function DriverModeEntryScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyles(() => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Theme.colors.background,
@@ -213,4 +214,4 @@ const styles = StyleSheet.create({
   cta: {
     marginTop: 22,
   },
-})
+}))

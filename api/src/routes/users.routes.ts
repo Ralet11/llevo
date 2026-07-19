@@ -1,12 +1,10 @@
 import { Router } from 'express'
 import { authenticate } from '../middleware/authenticate'
+import { getUserProfile } from '../controllers/users.controller'
 
 const router = Router()
 
 // GET /users/:id — perfil público de un usuario
-router.get('/:id', authenticate, async (req, res) => {
-  // TODO: implementar getUserProfile
-  res.json({ message: 'TODO: getUserProfile', id: req.params.id })
-})
+router.get('/:id', authenticate, getUserProfile)
 
 export default router

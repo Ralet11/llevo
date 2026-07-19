@@ -1,155 +1,195 @@
 import { Ionicons } from '@expo/vector-icons'
-import { router, useFocusEffect } from 'expo-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
+import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
-import MapView, { type Region } from 'react-native-maps'
 import { ScreenSafeArea } from '../../../components/app/ScreenSafeArea'
+import { DriverOnlineBar } from '../../../components/app/DriverOnlineBar'
 import { IconButton } from '../../../components/ui/IconButton'
-import { darkMapStyle } from '../../../constants/mapStyle'
 import { Theme } from '../../../constants/theme'
 import { useAuth } from '../../../lib/auth'
 import { api } from '../../../lib/api'
-import { DEFAULT_MAP_REGION, getInitialMapRegion } from '../../../lib/location'
+import { getSocket } from '../../../lib/socket'
+import { useDriverRoutes } from '../../../lib/driverRoutes'
+import { themedStyles } from '../../../lib/theme'
+import { RadarPulse } from '../../../components/app/home/RadarPulse'
 import {
   ActiveJobCard,
+  DaySelector,
   EmptyShipmentState,
   ShipmentOfferCard,
   UpcomingShipmentCard,
+  addDays,
+  isSameDay,
+  startOfDay,
   styles,
-  type ActiveJob,
-  type DriverRoute,
+  type AgendaItem,
   type Shipment,
   type UpcomingShipment,
 } from '../_panel'
 
-const POLL_INTERVAL = 30_000
-
 export default function DriverInicioScreen() {
   const { driverProfile, token, user } = useAuth()
+  const { routes, localRoutes, isLocalOnline, localCity, localBusy, setLocalOnline, refetchRoutes } = useDriverRoutes()
+  const params = useLocalSearchParams<{ date?: string }>()
+  const [agendaItems, setAgendaItems] = useState<AgendaItem[]>([])
   const [pendingShipment, setPendingShipment] = useState<Shipment | null>(null)
-  const [activeJob, setActiveJob] = useState<ActiveJob | null>(null)
-  const [upcomingShipments, setUpcomingShipments] = useState<UpcomingShipment[]>([])
-  const [routes, setRoutes] = useState<DriverRoute[]>([])
+  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()))
   const [loading, setLoading] = useState(true)
-  const [responding, setResponding] = useState(false)
+  const [responding, setResponding] = useState<string | null>(null)
   const [responseError, setResponseError] = useState<string | null>(null)
-  const [upcomingResponding, setUpcomingResponding] = useState<string | null>(null)
-  const [localBusy, setLocalBusy] = useState(false)
-  const [mapRegion, setMapRegion] = useState<Region>(DEFAULT_MAP_REGION)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Centra el mapa en la posicion del conductor (cae al default si no hay permiso).
+  // Recibe la fecha seleccionada desde el calendario (formato YYYY-MM-DD).
+  // Se parsea a mano: new Date("YYYY-MM-DD") asume UTC y corre el dia en
+  // timezones negativos (ej. Argentina).
   useEffect(() => {
-    let active = true
-    void (async () => {
-      try {
-        const { region } = await getInitialMapRegion()
-        if (active) setMapRegion(region)
-      } catch {}
-    })()
-    return () => { active = false }
-  }, [])
+    const match = params.date ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(params.date) : null
+    if (match) {
+      const [, year, month, day] = match
+      setSelectedDate(new Date(Number(year), Number(month) - 1, Number(day)))
+    }
+  }, [params.date])
 
   useFocusEffect(
     useCallback(() => {
       if (!driverProfile?.onboardingCompleted) { router.replace('/driver'); return }
       void fetchData()
-      intervalRef.current = setInterval(() => { void fetchPendingAndJob() }, POLL_INTERVAL)
-      return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
     }, [token, driverProfile])
   )
+
+  // Socket: recibe nueva oferta o cambio de estado en tiempo real
+  useEffect(() => {
+    const socket = getSocket()
+    if (!socket || !token) return
+
+    function onNewOffer() {
+      void fetchPending()
+      void fetchAgenda()
+    }
+
+    function onStatusChanged() {
+      void fetchAgenda()
+    }
+
+    // Cuando el socket reconecta, re-fetch por si se perdieron eventos
+    function onReconnect() {
+      void fetchPending()
+      void fetchAgenda()
+    }
+
+    socket.on('shipment:new_offer', onNewOffer)
+    socket.on('shipment:status_changed', onStatusChanged)
+    socket.on('connect', onReconnect)
+
+    return () => {
+      socket.off('shipment:new_offer', onNewOffer)
+      socket.off('shipment:status_changed', onStatusChanged)
+      socket.off('connect', onReconnect)
+    }
+  }, [token])
 
   async function fetchData() {
     if (!token) return
     setLoading(true)
-    await Promise.all([fetchPendingAndJob(), fetchRoutes()])
+    await Promise.all([fetchAgenda(), fetchPending(), refetchRoutes()])
     setLoading(false)
   }
 
-  async function fetchPendingAndJob() {
+  async function fetchAgenda() {
     if (!token) return
     try {
-      const [pendingData, jobData, upcomingData] = await Promise.all([
-        api.get<{ shipment: Shipment | null }>('/shipments/pending-for-driver', token),
-        api.get<{ job: ActiveJob | null }>('/shipments/active-job', token),
-        api.get<{ shipments: UpcomingShipment[] }>('/shipments/upcoming-for-driver', token),
-      ])
-      setPendingShipment(pendingData.shipment)
-      setActiveJob(jobData.job)
-      setUpcomingShipments(upcomingData.shipments)
+      const data = await api.get<{ items: AgendaItem[] }>('/shipments/agenda-for-driver', token)
+      setAgendaItems(data.items)
     } catch {}
   }
 
-  async function fetchRoutes() {
+  async function fetchPending() {
     if (!token) return
     try {
-      const data = await api.get<{ routes: DriverRoute[] }>('/drivers/routes/mine', token)
-      setRoutes(data.routes)
+      const data = await api.get<{ shipment: Shipment | null }>('/shipments/pending-for-driver', token)
+      setPendingShipment(data.shipment)
     } catch {}
   }
 
-  async function handleRespond(action: 'accept' | 'reject') {
-    if (!pendingShipment || !token) return
-    setResponding(true)
+  async function handleRespond(shipmentId: string, action: 'accept' | 'reject') {
+    if (!token) return
+    setResponding(shipmentId)
     setResponseError(null)
     try {
-      await api.post(`/shipments/${pendingShipment.id}/respond`, { action }, token)
-      setPendingShipment(null)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (action === 'accept') router.replace('/driver/job' as any)
+      await api.post(`/shipments/${shipmentId}/respond`, { action }, token)
+      setPendingShipment(prev => (prev?.id === shipmentId ? null : prev))
+      setAgendaItems(prev => prev.filter(i => !(i.kind === 'OFFER' && i.shipment.id === shipmentId)))
+      if (action === 'accept') router.replace('/driver/job')
+      else void fetchPending()
     } catch (err) {
       setResponseError(err instanceof Error ? err.message : 'Error al responder. Intentá de nuevo.')
     } finally {
-      setResponding(false)
-    }
-  }
-
-  async function handleRespondUpcoming(shipmentId: string, action: 'accept' | 'reject') {
-    if (!token) return
-    setUpcomingResponding(shipmentId)
-    try {
-      await api.post(`/shipments/${shipmentId}/respond`, { action }, token)
-      setUpcomingShipments(prev => prev.filter(s => s.id !== shipmentId))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (action === 'accept') router.replace('/driver/job' as any)
-    } catch {} finally {
-      setUpcomingResponding(null)
-    }
-  }
-
-  // Pone online/offline todas las rutas locales de una (presencia en tiempo real).
-  async function handleSetLocalOnline(online: boolean) {
-    if (!token) return
-    const local = routes.filter(r => r.kind === 'LOCAL')
-    if (local.length === 0) return
-    setLocalBusy(true)
-    try {
-      await Promise.all(
-        local.filter(r => r.isActive !== online).map(r => api.patch(`/drivers/routes/${r.id}`, { isActive: online }, token))
-      )
-      setRoutes(prev => prev.map(r => r.kind === 'LOCAL' ? { ...r, isActive: online } : r))
-    } catch {} finally {
-      setLocalBusy(false)
+      setResponding(null)
     }
   }
 
   if (!driverProfile?.onboardingCompleted) return null
 
-  const sectionTitle = activeJob ? 'Trabajo activo' : 'Pedido entrante'
-  const localRoutes = routes.filter(r => r.kind === 'LOCAL')
-  const isLocalOnline = localRoutes.some(r => r.isActive)
-  const onlineCities = Array.from(new Set(localRoutes.filter(r => r.isActive).map(r => r.originCity)))
-  const activeIntercityCount = routes.filter(r => r.kind === 'INTERCITY' && r.isActive).length
+  // ─── Modo ONLINE: mapa a pantalla completa ─────────────────────────────────
+  const today = startOfDay(new Date())
   const firstName = user?.name?.trim().split(' ')[0] || 'conductor'
   const ratingLabel = user && user.ratingCount > 0 ? user.rating.toFixed(1) : 'Nuevo'
+  // El pedido pendiente ya se muestra arriba en "Nuevo pedido" mientras estamos online;
+  // lo sacamos de la lista del dia para no duplicarlo.
+  const dayItems = agendaItems.filter(i =>
+    isSameDay(new Date(i.date), selectedDate) &&
+    !(isLocalOnline && pendingShipment && i.kind === 'OFFER' && i.shipment.id === pendingShipment.id)
+  )
+  const dayTitle = isSameDay(selectedDate, today)
+    ? 'Pedidos de hoy'
+    : isSameDay(selectedDate, addDays(today, 1))
+      ? 'Pedidos de mañana'
+      : isSameDay(selectedDate, addDays(today, -1))
+        ? 'Pedidos de ayer'
+        : `Pedidos · ${selectedDate.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}`
+
+  function renderAgendaItem(item: AgendaItem) {
+    if (item.kind === 'JOB') {
+      return (
+        <ActiveJobCard
+          key={item.job.id}
+          job={item.job}
+          onViewMap={() => router.replace('/driver/job')}
+          onPress={() => router.push({ pathname: '/driver/job/[id]', params: { id: item.job.id } })}
+        />
+      )
+    }
+    const itemDay = startOfDay(new Date(item.date))
+    if (itemDay > today) {
+      const upcoming: UpcomingShipment = { ...item.shipment, preferredDate: item.date }
+      return (
+        <UpcomingShipmentCard
+          key={item.shipment.id}
+          shipment={upcoming}
+          responding={responding === item.shipment.id}
+          onAccept={() => void handleRespond(item.shipment.id, 'accept')}
+          onReject={() => void handleRespond(item.shipment.id, 'reject')}
+        />
+      )
+    }
+    return (
+      <ShipmentOfferCard
+        key={item.shipment.id}
+        shipment={item.shipment}
+        responding={responding === item.shipment.id}
+        error={responseError}
+        onAccept={() => void handleRespond(item.shipment.id, 'accept')}
+        onReject={() => void handleRespond(item.shipment.id, 'reject')}
+      />
+    )
+  }
 
   return (
-    <ScreenSafeArea style={styles.container}>
+    <ScreenSafeArea style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <IconButton name="chevron-back" onPress={() => router.replace('/(app)')} />
         <View style={styles.headerCopy}>
           <Text style={styles.headerLabel}>Modo conductor</Text>
-          <Text style={styles.headerTitle}>Hola, {firstName} 👋</Text>
+          <Text style={styles.headerTitle}>Hola, {firstName}</Text>
         </View>
         <TouchableOpacity onPress={() => router.replace('/(app)')} style={styles.resetBtn}>
           <Ionicons name="swap-horizontal" size={18} color={Theme.colors.textMuted} />
@@ -157,60 +197,34 @@ export default function DriverInicioScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Hero de estado con mapa (drivers locales) */}
-        {localRoutes.length > 0 ? (
-          <View style={[mapStyles.mapCard, isLocalOnline ? mapStyles.mapCardOnline : mapStyles.mapCardOffline]}>
-            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-              <MapView
-                style={StyleSheet.absoluteFill}
-                customMapStyle={darkMapStyle}
-                region={mapRegion}
-                showsUserLocation
-                showsMyLocationButton={false}
-                pitchEnabled={false}
-                rotateEnabled={false}
-                scrollEnabled={false}
-                zoomEnabled={false}
-                toolbarEnabled={false}
-              />
-              {!isLocalOnline ? <View style={mapStyles.mapDim} /> : null}
-            </View>
+        <DriverOnlineBar />
 
-            <View style={mapStyles.mapOverlay}>
-              <View style={styles.heroTop}>
-                <View style={[styles.heroDot, isLocalOnline ? styles.heroDotOn : styles.heroDotOff]} />
-                <Text style={styles.heroState}>{isLocalOnline ? 'Estás online' : 'Estás offline'}</Text>
-              </View>
-              <Text style={styles.heroSub}>
-                {isLocalOnline
-                  ? `Recibiendo envíos en ${onlineCities.join(', ') || 'tu ciudad'}`
-                  : 'No estás recibiendo envíos locales ahora'}
-              </Text>
-              <TouchableOpacity
-                style={[styles.heroBtn, isLocalOnline ? styles.heroBtnOff : styles.heroBtnOn]}
-                activeOpacity={0.85}
-                disabled={localBusy}
-                onPress={() => void handleSetLocalOnline(!isLocalOnline)}
-              >
-                {localBusy
-                  ? <ActivityIndicator size="small" color={isLocalOnline ? Theme.colors.text : Theme.colors.black} />
-                  : <Text style={[styles.heroBtnText, !isLocalOnline && styles.heroBtnTextOn]}>
-                      {isLocalOnline ? 'Pausar' : 'Ponerme online'}
-                    </Text>}
-              </TouchableOpacity>
+        {isLocalOnline && (
+          pendingShipment ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Nuevo pedido</Text>
+              <ShipmentOfferCard
+                shipment={pendingShipment}
+                responding={responding === pendingShipment.id}
+                error={responseError}
+                onAccept={() => void handleRespond(pendingShipment.id, 'accept')}
+                onReject={() => void handleRespond(pendingShipment.id, 'reject')}
+              />
             </View>
-          </View>
-        ) : activeIntercityCount > 0 ? (
-          <View style={[styles.hero, styles.heroOnline]}>
-            <View style={styles.heroTop}>
-              <View style={[styles.heroDot, styles.heroDotOn]} />
-              <Text style={styles.heroState}>Rutas activas</Text>
+          ) : (
+            <View style={mapStyles.onlineHint}>
+              <RadarPulse />
+              <Text style={mapStyles.onlineHintText}>Esperando pedidos en {localCity}…</Text>
             </View>
-            <Text style={styles.heroSub}>
-              Te avisamos cuando un paquete coincida con {activeIntercityCount === 1 ? 'tu ruta' : 'tus rutas'}.
-            </Text>
-          </View>
-        ) : null}
+          )
+        )}
+
+        {/* Selector de día */}
+        <DaySelector
+          selected={selectedDate}
+          onSelect={setSelectedDate}
+          onOpenCalendar={() => router.navigate('/driver/calendario' as never)}
+        />
 
         {/* Strip de identidad */}
         <View style={styles.identityStrip}>
@@ -233,64 +247,76 @@ export default function DriverInicioScreen() {
           </View>
         </View>
 
-        {/* Pedido / Trabajo activo */}
+        {/* Pedidos del día */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>{sectionTitle}</Text>
+          <Text style={styles.sectionTitle}>{dayTitle}</Text>
           {loading ? (
             <View style={styles.centerState}>
               <ActivityIndicator color={Theme.colors.lime} />
             </View>
-          ) : activeJob ? (
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            <ActiveJobCard job={activeJob} onViewMap={() => router.replace('/driver/job' as any)} />
-          ) : pendingShipment ? (
-            <ShipmentOfferCard
-              shipment={pendingShipment}
-              responding={responding}
-              error={responseError}
-              onAccept={() => void handleRespond('accept')}
-              onReject={() => void handleRespond('reject')}
-            />
-          ) : (
+          ) : dayItems.length === 0 ? (
             <EmptyShipmentState />
+          ) : (
+            dayItems.map(renderAgendaItem)
           )}
         </View>
-
-        {/* Próximos envíos */}
-        {upcomingShipments.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Próximos envíos</Text>
-            {upcomingShipments.map(s => (
-              <UpcomingShipmentCard
-                key={s.id}
-                shipment={s}
-                responding={upcomingResponding === s.id}
-                onAccept={() => void handleRespondUpcoming(s.id, 'accept')}
-                onReject={() => void handleRespondUpcoming(s.id, 'reject')}
-              />
-            ))}
-          </View>
-        )}
       </ScrollView>
+
+      {/* Botón fijo: ponerme online (el pausar ya vive en la franja de arriba) */}
+      {!isLocalOnline && (
+        <View style={mapStyles.onlineBar}>
+          {localRoutes.length > 0 ? (
+            <TouchableOpacity
+              style={mapStyles.goOnlineBtn}
+              activeOpacity={0.85}
+              disabled={localBusy}
+              onPress={() => void setLocalOnline(true)}
+            >
+              {localBusy
+                ? <ActivityIndicator size="small" color={Theme.colors.black} />
+                : <>
+                    <Ionicons name="navigate" size={18} color={Theme.colors.black} />
+                    <Text style={mapStyles.goOnlineBtnText}>Ponerme online en {localCity}</Text>
+                  </>}
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.nudgeCard}
+              activeOpacity={0.85}
+              onPress={() => router.push({ pathname: '/driver/setup', params: { mode: 'entrega', addingRoute: '1', kind: 'LOCAL' } })}
+            >
+              <View style={styles.nudgeIcon}>
+                <Ionicons name="add" size={22} color={Theme.colors.black} />
+              </View>
+              <View style={styles.nudgeBody}>
+                <Text style={styles.nudgeTitle}>Activá envíos locales</Text>
+                <Text style={styles.nudgeDesc}>Creá una ruta local para poder ponerte online en tu ciudad.</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </ScreenSafeArea>
   )
 }
 
-const mapStyles = StyleSheet.create({
-  mapCard: {
-    height: 240,
-    borderRadius: 22,
-    overflow: 'hidden',
-    borderWidth: 1.5,
-    backgroundColor: Theme.colors.surface,
+const mapStyles = themedStyles(() => StyleSheet.create({
+  onlineHint: {
+    alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: 12, borderRadius: 20,
+    backgroundColor: Theme.colors.surfaceElevated,
+    borderWidth: 1, borderColor: Theme.colors.border,
   },
-  mapCardOnline: { borderColor: Theme.colors.lime },
-  mapCardOffline: { borderColor: Theme.colors.border },
-  mapDim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,10,0.45)' },
-  mapOverlay: {
-    position: 'absolute',
-    left: 0, right: 0, bottom: 0,
-    padding: 16, gap: 8,
-    backgroundColor: 'rgba(10,10,10,0.78)',
+  onlineHintText: { color: Theme.colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13, textAlign: 'center' },
+
+  onlineBar: {
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 14,
+    borderTopWidth: 1, borderTopColor: Theme.colors.border,
+    backgroundColor: Theme.colors.background,
   },
-})
+  goOnlineBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    height: 52, borderRadius: 16, backgroundColor: Theme.colors.lime,
+  },
+  goOnlineBtnText: { color: Theme.colors.black, fontFamily: Theme.fonts.bold, fontSize: 15 },
+}))

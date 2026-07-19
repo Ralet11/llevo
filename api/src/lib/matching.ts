@@ -22,7 +22,7 @@ const CITY_ALIASES: Record<string, string> = {
   'capital federal': 'buenos aires',
 }
 
-function normalize(s: string): string {
+export function normalize(s: string): string {
   const base = s
     .toLowerCase()
     .trim()
@@ -55,14 +55,19 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
 
   // If preferredDate provided, compute the required day of week in Argentina time
   let requiredDay: string | null = null
+  let preferredDateKey: string | null = null
   if (params.preferredDate) {
     requiredDay = new Intl.DateTimeFormat('en', {
       weekday: 'long',
       timeZone: 'America/Argentina/Buenos_Aires',
     }).format(params.preferredDate).toUpperCase()
+    // Mismo formato YYYY-MM-DD que usa DriverDayOff.date (ver drivers.controller.ts).
+    preferredDateKey = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Argentina/Buenos_Aires',
+    }).format(params.preferredDate)
   }
 
-  const matched = routes.filter(route => {
+  let matched = routes.filter(route => {
     if (isLocalShipment) {
       // Local: la ruta cubre la ciudad si su ciudad coincide. Sin filtro de dia:
       // estar "online" (isActive) ya implica disponibilidad ahora.
@@ -76,6 +81,20 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
     return true
   })
 
+  // INTERCITY con fecha: excluir choferes que marcaron ese dia como no disponible.
+  // LOCAL no pasa por aca (es presencia en tiempo real via isActive, no fecha).
+  if (!isLocalShipment && preferredDateKey && matched.length > 0) {
+    const daysOff = await prisma.driverDayOff.findMany({
+      where: {
+        driverId: { in: matched.map(r => r.driver.id) },
+        date: preferredDateKey,
+      },
+      select: { driverId: true },
+    })
+    const offDriverIds = new Set(daysOff.map(d => d.driverId))
+    matched = matched.filter(route => !offDriverIds.has(route.driver.id))
+  }
+
   matched.sort((a, b) => b.driver.rating - a.driver.rating)
 
   return matched.map(route => ({
@@ -84,4 +103,146 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
     rating: route.driver.rating,
     pushToken: route.driver.pushToken,
   }))
+}
+
+// ─────────────────────────────────────────────
+// PASAJEROS: buscar viajes que cubren A -> B una fecha dada
+// ─────────────────────────────────────────────
+
+type PassengerSearchParams = {
+  originCity: string
+  destinationCity: string
+  date: Date
+  passengerId?: string
+}
+
+export type PassengerTripOption = {
+  routeId: string
+  date: string
+  originCity: string
+  destinationCity: string
+  waypointCities: string[]
+  departureTimeFrom: string | null
+  departureTimeTo: string | null
+  pricePerSeat: number | null
+  seatsOffered: number
+  seatsFree: number
+  driver: {
+    id: string
+    name: string
+    avatarUrl: string | null
+    rating: number
+    ratingCount: number
+    isIdentityVerified: boolean
+  }
+  vehicle: { type: string; model: string | null; seats: number } | null
+}
+
+export type PassengerSearchResult = {
+  sameCity: boolean
+  options: PassengerTripOption[]
+}
+
+// Busca rutas INTERCITY que llevan pasajeros y cubren el corredor origen -> destino
+// en el dia de la fecha pedida, con asientos libres. Por ahora solo entre ciudades.
+export async function findPassengerTrips(params: PassengerSearchParams): Promise<PassengerSearchResult> {
+  const originNorm = normalize(params.originCity)
+  const destNorm = normalize(params.destinationCity)
+
+  // Dentro de la misma ciudad todavia no se cubre (viajes entre ciudades primero).
+  if (originNorm === destNorm) return { sameCity: true, options: [] }
+
+  const requiredDay = new Intl.DateTimeFormat('en', {
+    weekday: 'long',
+    timeZone: 'America/Argentina/Buenos_Aires',
+  }).format(params.date).toUpperCase()
+  const dateKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+  }).format(params.date)
+
+  const routes = await prisma.driverRoute.findMany({
+    where: {
+      isActive: true,
+      kind: 'INTERCITY',
+      carriesPassengers: true,
+      ...(params.passengerId ? { driverId: { not: params.passengerId } } : {}),
+    },
+    include: {
+      driver: {
+        select: {
+          id: true, name: true, avatarUrl: true, rating: true, ratingCount: true,
+          driverVerifiedAt: true, driverVerificationStatus: true,
+        },
+      },
+      vehicle: { select: { type: true, model: true, seats: true } },
+    },
+  })
+
+  let matched = routes.filter(route => {
+    const allCities = [route.originCity, ...route.waypointCities, route.destinationCity].map(normalize)
+    const originIdx = allCities.indexOf(originNorm)
+    const destIdx = allCities.indexOf(destNorm)
+    if (originIdx === -1 || destIdx === -1 || originIdx >= destIdx) return false
+    if (!(route.daysOfWeek as string[]).includes(requiredDay)) return false
+    return true
+  })
+
+  // Excluir choferes que marcaron ese dia como no disponible.
+  if (matched.length > 0) {
+    const daysOff = await prisma.driverDayOff.findMany({
+      where: { driverId: { in: matched.map(r => r.driver.id) }, date: dateKey },
+      select: { driverId: true },
+    })
+    const offDriverIds = new Set(daysOff.map(d => d.driverId))
+    matched = matched.filter(route => !offDriverIds.has(route.driver.id))
+  }
+
+  // Asientos ya reservados (APPROVED/PAID) por ruta para esa fecha, para descontarlos.
+  const heldByRoute = new Map<string, number>()
+  if (matched.length > 0) {
+    const held = await prisma.rideBooking.groupBy({
+      by: ['routeId'],
+      where: { routeId: { in: matched.map(r => r.id) }, date: dateKey, status: { in: ['APPROVED', 'PAID'] } },
+      _sum: { seats: true },
+    })
+    for (const h of held) heldByRoute.set(h.routeId, h._sum.seats ?? 0)
+  }
+
+  const options: PassengerTripOption[] = matched.map(route => {
+    const seatsOffered = route.seatsOffered ?? 0
+    const seatsFree = Math.max(0, seatsOffered - (heldByRoute.get(route.id) ?? 0))
+    return {
+      routeId: route.id,
+      date: dateKey,
+      originCity: route.originCity,
+      destinationCity: route.destinationCity,
+      waypointCities: route.waypointCities,
+      departureTimeFrom: route.departureTimeFrom,
+      departureTimeTo: route.departureTimeTo,
+      pricePerSeat: route.pricePerSeat,
+      seatsOffered,
+      seatsFree,
+      driver: {
+        id: route.driver.id,
+        name: route.driver.name,
+        avatarUrl: route.driver.avatarUrl,
+        rating: route.driver.rating,
+        ratingCount: route.driver.ratingCount,
+        isIdentityVerified: route.driver.driverVerifiedAt != null || route.driver.driverVerificationStatus === 'APPROVED',
+      },
+      vehicle: route.vehicle
+        ? { type: route.vehicle.type, model: route.vehicle.model, seats: route.vehicle.seats }
+        : null,
+    }
+  })
+
+  // Ordenar por horario de salida (los sin horario al final), luego por rating.
+  options.sort((a, b) => {
+    const ta = a.departureTimeFrom ?? '99:99'
+    const tb = b.departureTimeFrom ?? '99:99'
+    if (ta !== tb) return ta.localeCompare(tb)
+    return b.driver.rating - a.driver.rating
+  })
+
+  return { sameCity: false, options: options.filter(o => o.seatsFree > 0) }
 }

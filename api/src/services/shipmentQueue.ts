@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma'
+import { emitToUser } from '../lib/socket'
 import { sendPushNotification } from './notifications'
 
 const OFFER_TIMEOUT_MS = 15 * 60 * 1000
@@ -16,6 +17,12 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
       where: { id: shipmentId },
       data: { status: 'NO_COVERAGE' },
     })
+
+    emitToUser(shipment.senderId, 'shipment:status_changed', {
+      shipmentId,
+      status: 'NO_COVERAGE',
+    })
+
     if (shipment.sender.pushToken) {
       await sendPushNotification({
         to: shipment.sender.pushToken,
@@ -36,6 +43,27 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
   await prisma.shipment.update({
     where: { id: shipmentId },
     data: { lastNotifiedAt: new Date() },
+  })
+
+  // Socket: el conductor recibe la oferta en tiempo real
+  emitToUser(nextDriverId, 'shipment:new_offer', {
+    shipmentId: shipment.id,
+    shipment: {
+      id: shipment.id,
+      originCity: shipment.originCity,
+      destinationCity: shipment.destinationCity,
+      originAddress: shipment.originAddress,
+      deliveryAddress: shipment.deliveryAddress,
+      weightKg: shipment.weightKg,
+      packageSize: shipment.packageSize,
+      preferredDate: shipment.preferredDate,
+      pickupContactName: shipment.pickupContactName,
+      pickupContactPhone: shipment.pickupContactPhone,
+      recipientDetails: shipment.recipientDetails,
+      notes: shipment.notes,
+      status: shipment.status,
+      candidateDriverIds: shipment.candidateDriverIds,
+    },
   })
 
   if (driver?.pushToken) {

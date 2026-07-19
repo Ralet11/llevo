@@ -12,8 +12,6 @@ export const publicUserSelect = {
   createdAt: true,
   phoneVerifiedAt: true,
   driverVerificationStatus: true,
-  driverVerificationSessionId: true,
-  driverVerificationUrl: true,
   driverVerifiedAt: true,
 } satisfies Prisma.UserSelect
 

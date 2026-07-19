@@ -3,52 +3,35 @@ import { router, useFocusEffect } from 'expo-router'
 import { useCallback, useState } from 'react'
 import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../../components/app/ScreenSafeArea'
+import { DriverOnlineBar } from '../../../components/app/DriverOnlineBar'
 import { Theme } from '../../../constants/theme'
-import { useAuth } from '../../../lib/auth'
-import { api } from '../../../lib/api'
+import { useDriverRoutes } from '../../../lib/driverRoutes'
 import { RouteCard, styles, type DriverRoute } from '../_panel'
 
 export default function DriverRutasScreen() {
-  const { token } = useAuth()
-  const [routes, setRoutes] = useState<DriverRoute[]>([])
-  const [loading, setLoading] = useState(true)
+  const { routes, loading, refetchRoutes, toggleRoute, deleteRoute } = useDriverRoutes()
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   useFocusEffect(
     useCallback(() => {
-      void fetchRoutes()
-    }, [token])
+      void refetchRoutes()
+    }, [refetchRoutes])
   )
 
-  async function fetchRoutes() {
-    if (!token) return
-    setLoading(true)
-    try {
-      const data = await api.get<{ routes: DriverRoute[] }>('/drivers/routes/mine', token)
-      setRoutes(data.routes)
-    } catch {} finally {
-      setLoading(false)
-    }
-  }
-
   async function handleToggleRoute(route: DriverRoute) {
-    if (!token) return
     setTogglingId(route.id)
     try {
-      await api.patch(`/drivers/routes/${route.id}`, { isActive: !route.isActive }, token)
-      setRoutes(prev => prev.map(r => r.id === route.id ? { ...r, isActive: !r.isActive } : r))
+      await toggleRoute(route.id, !route.isActive)
     } catch {} finally {
       setTogglingId(null)
     }
   }
 
   async function handleDeleteRoute(routeId: string) {
-    if (!token) return
     setDeletingId(routeId)
     try {
-      await api.delete(`/drivers/routes/${routeId}`, token)
-      setRoutes(prev => prev.filter(r => r.id !== routeId))
+      await deleteRoute(routeId)
     } catch {} finally {
       setDeletingId(null)
     }
@@ -77,6 +60,8 @@ export default function DriverRutasScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <DriverOnlineBar />
+
         <View style={styles.section}>
           {loading && routes.length === 0 ? (
             <View style={styles.centerState}>

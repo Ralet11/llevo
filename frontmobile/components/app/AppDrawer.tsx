@@ -13,6 +13,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Theme } from '../../constants/theme'
+import { useTheme } from '../../lib/theme'
 import type { User } from '../../lib/auth'
 import { Avatar } from '../ui/Avatar'
 
@@ -38,15 +39,10 @@ const { width } = Dimensions.get('window')
 const DRAWER_WIDTH = Math.min(width * 0.82, 328)
 
 const ITEMS: DrawerItem[] = [
-  { icon: 'business-outline', label: 'Ciudad', href: '/(app)/city' },
-  { icon: 'time-outline', label: 'Historial de solicitudes', href: '/(app)/history' },
-  { icon: 'cube-outline', label: 'Entregas', href: '/(app)/deliveries' },
-  { icon: 'car-sport-outline', label: 'Flete', href: '/(app)/freight' },
-  { icon: 'notifications-outline', label: 'Notificaciones', href: '/(app)/notifications' },
-  { icon: 'shield-checkmark-outline', label: 'Seguridad', href: '/(app)/safety' },
+  { icon: 'home-outline', label: 'Inicio', href: '/(app)' },
+  { icon: 'cube-outline', label: 'Mis envios', href: '/(app)/history' },
+  { icon: 'car-sport-outline', label: 'Viajes', href: '/(app)/travel' },
   { icon: 'settings-outline', label: 'Configuracion', href: '/(app)/profile' },
-  { icon: 'help-circle-outline', label: 'Ayuda', href: '/(app)/help' },
-  { icon: 'chatbubble-ellipses-outline', label: 'Soporte', href: '/(app)/support' },
 ]
 
 function getInitials(name?: string) {
@@ -55,19 +51,25 @@ function getInitials(name?: string) {
 }
 
 function MenuRow({ item, active, onPress }: { item: DrawerItem; active: boolean; onPress: () => void }) {
+  const { palette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   return (
     <TouchableOpacity
       activeOpacity={0.82}
       onPress={onPress}
       style={[styles.menuRow, active && styles.menuRowActive]}
     >
-      <Ionicons name={item.icon} size={18} color={active ? Theme.colors.text : Theme.colors.textMuted} />
+      <Ionicons name={item.icon} size={18} color={active ? colors.text : colors.textMuted} />
       <Text style={[styles.menuLabel, active && styles.menuLabelActive]}>{item.label}</Text>
     </TouchableOpacity>
   )
 }
 
 export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDriverMode, onLogout }: Props) {
+  const { palette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   const [shouldRender, setShouldRender] = useState(visible)
   const translateX = useRef(new Animated.Value(-DRAWER_WIDTH)).current
   const opacity = useRef(new Animated.Value(0)).current
@@ -127,7 +129,11 @@ export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDr
 
       <Animated.View renderToHardwareTextureAndroid style={[styles.drawer, { transform: [{ translateX }] }]}>
         <SafeAreaView style={styles.drawerSafe} edges={['top', 'bottom']}>
-          <View style={styles.profileRow}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            style={styles.profileRow}
+            onPress={() => onNavigate('/(app)/profile')}
+          >
             <View style={styles.notificationDot}>
               <Text style={styles.notificationText}>0</Text>
             </View>
@@ -135,12 +141,12 @@ export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDr
             <View style={styles.profileCopy}>
               <Text style={styles.profileName}>{user?.name ?? 'Usuario LLEVO'}</Text>
               <View style={styles.ratingRow}>
-                <Ionicons name="star" size={13} color={Theme.colors.warning} />
+                <Ionicons name="star" size={13} color={colors.warning} />
                 <Text style={styles.ratingText}>{user?.rating?.toFixed(1) ?? '0.0'} ({user?.ratingCount ?? 0})</Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Theme.colors.text} />
-          </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.text} />
+          </TouchableOpacity>
 
           <View style={styles.menu}>
             {ITEMS.map(item => (
@@ -159,7 +165,7 @@ export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDr
             </TouchableOpacity>
 
             <TouchableOpacity activeOpacity={0.78} style={styles.logout} onPress={onLogout}>
-              <Ionicons name="log-out-outline" size={18} color={Theme.colors.danger} />
+              <Ionicons name="log-out-outline" size={18} color={colors.danger} />
               <Text style={styles.logoutText}>Cerrar sesion</Text>
             </TouchableOpacity>
           </View>
@@ -169,7 +175,7 @@ export function AppDrawer({ activePath, user, visible, onClose, onNavigate, onDr
   )
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   root: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 100,
@@ -177,7 +183,7 @@ const styles = StyleSheet.create({
   },
   scrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: Theme.colors.scrim,
+    backgroundColor: colors.scrim,
     zIndex: 100,
     elevation: 100,
   },
@@ -187,9 +193,9 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: DRAWER_WIDTH,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
     borderRightWidth: 1,
-    borderRightColor: Theme.colors.border,
+    borderRightColor: colors.border,
     zIndex: 101,
     elevation: 101,
   },
@@ -213,12 +219,12 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.danger,
+    backgroundColor: colors.danger,
     borderWidth: 2,
-    borderColor: Theme.colors.background,
+    borderColor: colors.background,
   },
   notificationText: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 9,
   },
@@ -226,7 +232,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileName: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -237,14 +243,14 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   ratingText: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 11,
   },
   menu: {
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
     paddingVertical: 6,
   },
   menuRow: {
@@ -255,10 +261,10 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   menuRowActive: {
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
   },
   menuLabel: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.medium,
     fontSize: 13,
   },
@@ -275,10 +281,10 @@ const styles = StyleSheet.create({
     borderRadius: Theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: colors.lime,
   },
   driverModeText: {
-    color: Theme.colors.black,
+    color: colors.black,
     fontFamily: Theme.fonts.bold,
     fontSize: 14,
   },
@@ -290,7 +296,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   logoutText: {
-    color: Theme.colors.danger,
+    color: colors.danger,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 13,
   },

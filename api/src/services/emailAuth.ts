@@ -18,6 +18,16 @@ export async function createEmailAuthCode(email: string, userId?: string | null)
   const codeHash = await bcrypt.hash(code, 10)
   const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MINUTES * 60 * 1000)
 
+  await prisma.emailAuthCode.updateMany({
+    where: {
+      email: normalizedEmail,
+      consumedAt: null,
+    },
+    data: {
+      consumedAt: new Date(),
+    },
+  })
+
   await prisma.emailAuthCode.create({
     data: {
       email: normalizedEmail,
@@ -124,7 +134,7 @@ export async function sendEmailAuthCode(email: string, code: string) {
 }
 
 export function getEmailAuthDevCode(code: string) {
-  return process.env.NODE_ENV === 'production' ? undefined : code
+  return process.env.NODE_ENV === 'development' ? code : undefined
 }
 
 export function buildNameFromEmail(email: string) {

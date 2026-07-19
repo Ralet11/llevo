@@ -30,6 +30,11 @@ const routeFieldsSchema = z.object({
   vehicleColor: z.string().min(1).optional(),
   maxWeightKg: z.number().positive(),
   pricePerKg: z.number().positive().optional(),
+  // Pasajeros: una ruta INTERCITY puede llevar personas ademas de paquetes.
+  vehicleId: z.string().optional(),
+  carriesPassengers: z.boolean().default(false),
+  seatsOffered: z.number().int().min(1).max(20).optional(),
+  pricePerSeat: z.number().positive().optional(),
 })
 
 const createRouteSchema = routeFieldsSchema.superRefine((data, ctx) => {
@@ -48,7 +53,40 @@ const createRouteSchema = routeFieldsSchema.superRefine((data, ctx) => {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['daysOfWeek'], message: 'Elegí al menos un día.' })
     }
   }
+
+  if (data.carriesPassengers) {
+    // Pasajeros solo en rutas entre ciudades por ahora.
+    if (data.kind !== 'INTERCITY') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['carriesPassengers'], message: 'Por ahora solo se pueden llevar pasajeros en rutas entre ciudades.' })
+    }
+    if (!data.vehicleId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['vehicleId'], message: 'Elegí un vehículo para llevar pasajeros.' })
+    }
+    if (!data.seatsOffered) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['seatsOffered'], message: 'Indicá cuántos asientos ofrecés.' })
+    }
+    if (data.pricePerSeat == null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pricePerSeat'], message: 'Indicá el precio por asiento.' })
+    }
+  }
 })
+
+// Verifica que el vehiculo sea del conductor y que ofrezca <= seats reales.
+// Devuelve un mensaje de error o null si esta ok.
+async function validatePassengerVehicle(
+  driverId: string,
+  vehicleId: string | undefined,
+  seatsOffered: number | undefined,
+): Promise<string | null> {
+  if (!vehicleId) return null
+  const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } })
+  if (!vehicle || !vehicle.isActive) return 'El vehículo seleccionado no existe.'
+  if (vehicle.driverId !== driverId) return 'El vehículo seleccionado no es tuyo.'
+  if (seatsOffered != null && seatsOffered > vehicle.seats) {
+    return `El vehículo tiene ${vehicle.seats} asientos; no podés ofrecer ${seatsOffered}.`
+  }
+  return null
+}
 
 const updateRouteSchema = routeFieldsSchema.partial().extend({
   isActive: z.boolean().optional(),
@@ -65,14 +103,19 @@ function toRouteColumns(data: z.infer<typeof routeFieldsSchema>) {
     vehicleColor: data.vehicleColor,
     maxWeightKg: data.maxWeightKg,
     pricePerKg: data.pricePerKg,
+    vehicleId: data.vehicleId ?? null,
   }
   if (data.kind === 'LOCAL') {
+    // Sin pasajeros en LOCAL por ahora.
     return {
       ...common,
       originCity: data.city!,
       destinationCity: data.city!,
       waypointCities: [],
       daysOfWeek: [],
+      carriesPassengers: false,
+      seatsOffered: null,
+      pricePerSeat: null,
     }
   }
   return {
@@ -83,6 +126,9 @@ function toRouteColumns(data: z.infer<typeof routeFieldsSchema>) {
     daysOfWeek: data.daysOfWeek,
     departureTimeFrom: data.departureTimeFrom,
     departureTimeTo: data.departureTimeTo,
+    carriesPassengers: data.carriesPassengers,
+    seatsOffered: data.carriesPassengers ? (data.seatsOffered ?? null) : null,
+    pricePerSeat: data.carriesPassengers ? (data.pricePerSeat ?? null) : null,
   }
 }
 
@@ -114,6 +160,11 @@ export async function createDriverRoute(req: AuthRequest, res: Response, next: N
       }
     }
 
+    if (data.carriesPassengers) {
+      const vehicleError = await validatePassengerVehicle(req.userId!, data.vehicleId, data.seatsOffered)
+      if (vehicleError) throw new AppError(vehicleError, 400)
+    }
+
     const route = await prisma.driverRoute.create({
       data: { ...toRouteColumns(data), driverId: req.userId! },
     })
@@ -143,6 +194,17 @@ export async function updateDriverRoute(req: AuthRequest<RouteParams>, res: Resp
 
     // `city` (local) no es columna: si viene, se mapea a origen y destino.
     const { city, ...rest } = updateRouteSchema.parse(req.body)
+
+    // Si la ruta va a llevar pasajeros (ya sea porque se activa ahora o porque ya
+    // lo hacía y se cambia vehículo/asientos), revalidar contra el vehículo real.
+    const effectiveCarries = rest.carriesPassengers ?? route.carriesPassengers
+    if (effectiveCarries) {
+      const effectiveVehicleId = rest.vehicleId ?? route.vehicleId ?? undefined
+      const effectiveSeats = rest.seatsOffered ?? route.seatsOffered ?? undefined
+      const vehicleError = await validatePassengerVehicle(req.userId!, effectiveVehicleId, effectiveSeats)
+      if (vehicleError) throw new AppError(vehicleError, 400)
+    }
+
     const data = city ? { ...rest, originCity: city, destinationCity: city } : rest
     const updated = await prisma.driverRoute.update({
       where: { id: req.params.id },

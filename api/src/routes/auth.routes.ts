@@ -11,6 +11,7 @@ import {
   sendPhoneCode,
   setEmailPassword,
   startEmailAuth,
+  updateMe,
   verifyEmailCode,
   verifyMyPhone,
 } from '../controllers/auth.controller'
@@ -37,6 +38,7 @@ router.post('/phone/verify', smsLimit, authenticate, verifyMyPhone)
 router.post('/google', loginLimit, loginWithGoogle)
 router.post('/apple', loginLimit, loginWithApple)
 router.get('/me', authenticate, me)
+router.patch('/me', authenticate, updateMe)
 router.post('/push-token', authenticate, savePushToken)
 
 export default router

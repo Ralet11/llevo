@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons'
 import { useRef, useState } from 'react'
 import {
   ActivityIndicator,
@@ -17,9 +18,10 @@ type Props = {
   value: string
   onChangeCity: (city: string) => void
   placeholder?: string
+  icon?: React.ComponentProps<typeof Ionicons>['name']
 }
 
-export function CityPicker({ label, value, onChangeCity, placeholder }: Props) {
+export function CityPicker({ label, value, onChangeCity, placeholder, icon }: Props) {
   const [query, setQuery] = useState(value)
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [loading, setLoading] = useState(false)
@@ -65,6 +67,7 @@ export function CityPicker({ label, value, onChangeCity, placeholder }: Props) {
       {label ? <Text style={styles.label}>{label}</Text> : null}
 
       <View style={[styles.inputRow, open && styles.inputRowOpen]}>
+        {icon ? <Ionicons name={icon} size={16} color={Theme.colors.lime} style={styles.leadingIcon} /> : null}
         <TextInput
           style={styles.input}
           value={query}
@@ -136,6 +139,7 @@ const styles = StyleSheet.create({
     fontFamily: Theme.fonts.medium,
     color: Colors.text,
   },
+  leadingIcon: { marginRight: 10 },
   spinner: { marginLeft: 8 },
   dropdown: {
     borderWidth: 1,

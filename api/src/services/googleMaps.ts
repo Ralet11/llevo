@@ -15,6 +15,15 @@ export type RouteWaypointInput = {
   longitude?: number
 }
 
+export type RouteStep = {
+  instruction: string
+  maneuver: string
+  distanceMeters: number
+  encodedPolyline: string
+  startLocation: { latitude: number; longitude: number }
+  endLocation: { latitude: number; longitude: number }
+}
+
 export type RoutePreview = {
   origin: {
     placeId: string
@@ -39,6 +48,7 @@ export type RoutePreview = {
   distanceMeters: number
   durationSeconds: number
   encodedPolyline: string
+  steps: RouteStep[]
   travelMode: 'DRIVE' | 'TWO_WHEELER'
 }
 
@@ -70,6 +80,19 @@ type PlaceDetailsResponse = {
   }>
 }
 
+type GoogleLatLng = { latLng?: { latitude?: number; longitude?: number } }
+
+type GoogleRouteStep = {
+  distanceMeters?: number
+  navigationInstruction?: {
+    maneuver?: string
+    instructions?: string
+  }
+  polyline?: { encodedPolyline?: string }
+  startLocation?: GoogleLatLng
+  endLocation?: GoogleLatLng
+}
+
 type ComputeRoutesResponse = {
   routes?: Array<{
     distanceMeters?: number
@@ -77,6 +100,9 @@ type ComputeRoutesResponse = {
     polyline?: {
       encodedPolyline?: string
     }
+    legs?: Array<{
+      steps?: GoogleRouteStep[]
+    }>
   }>
 }
 
@@ -181,6 +207,33 @@ function parseDurationSeconds(duration?: string) {
   return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0
 }
 
+function flattenGoogleLatLng(point?: GoogleLatLng): { latitude: number; longitude: number } | null {
+  const latitude = point?.latLng?.latitude
+  const longitude = point?.latLng?.longitude
+  if (latitude === undefined || longitude === undefined) return null
+  return { latitude, longitude }
+}
+
+function parseRouteSteps(steps?: GoogleRouteStep[]): RouteStep[] {
+  if (!steps) return []
+  return steps
+    .map((step): RouteStep | null => {
+      const startLocation = flattenGoogleLatLng(step.startLocation)
+      const endLocation = flattenGoogleLatLng(step.endLocation)
+      if (!startLocation || !endLocation || !step.polyline?.encodedPolyline) return null
+
+      return {
+        instruction: step.navigationInstruction?.instructions || '',
+        maneuver: step.navigationInstruction?.maneuver || 'STRAIGHT',
+        distanceMeters: step.distanceMeters || 0,
+        encodedPolyline: step.polyline.encodedPolyline,
+        startLocation,
+        endLocation,
+      }
+    })
+    .filter((step): step is RouteStep => step !== null)
+}
+
 async function getPlaceDetails(placeId: string, sessionToken?: string) {
   const query = new URLSearchParams({
     languageCode: getLanguageCode(),
@@ -239,15 +292,50 @@ async function reverseGeocode(latitude: number, longitude: number): Promise<{ ci
   }
 }
 
-async function resolveWaypointFromText(input: string) {
-  const suggestions = await autocompletePlaces({ input })
-  const firstMatch = suggestions[0]
-
-  if (!firstMatch) {
-    throw new AppError(`No pude ubicar "${input}"`, 404)
+async function forwardGeocode(address: string): Promise<ResolvedWaypoint> {
+  const url = `${GEOCODING_URL}?address=${encodeURIComponent(address)}&key=${getGoogleMapsApiKey()}&language=${getLanguageCode()}&region=${getRegionCode()}`
+  let response: Response
+  try {
+    response = await fetch(url)
+  } catch {
+    throw new AppError('No pude comunicarme con Google Maps desde el backend', 502)
   }
 
-  return getPlaceDetails(firstMatch.placeId)
+  const data = await response.json().catch(() => null) as {
+    status: string
+    results?: Array<{
+      place_id?: string
+      formatted_address?: string
+      geometry?: { location?: { lat?: number; lng?: number } }
+      address_components?: Array<{ long_name?: string; types?: string[] }>
+    }>
+  } | null
+
+  if (!data || data.status !== 'OK' || !data.results?.[0]) {
+    throw new AppError(`No pude ubicar la dirección "${address}"`, 404)
+  }
+
+  const result = data.results[0]
+  const lat = result.geometry?.location?.lat
+  const lng = result.geometry?.location?.lng
+
+  if (!result.place_id || lat === undefined || lng === undefined) {
+    throw new AppError('Google Maps devolvió un lugar incompleto', 502)
+  }
+
+  return {
+    placeId: result.place_id,
+    label: result.formatted_address || address,
+    formattedAddress: result.formatted_address || address,
+    city: extractCityFromComponents(
+      result.address_components?.map(c => ({ longText: c.long_name, types: c.types }))
+    ),
+    location: { latitude: lat, longitude: lng },
+  }
+}
+
+async function resolveWaypointFromText(input: string) {
+  return forwardGeocode(input)
 }
 
 async function resolveWaypoint(input: RouteWaypointInput, sessionToken?: string) {
@@ -289,8 +377,15 @@ async function resolveWaypoint(input: RouteWaypointInput, sessionToken?: string)
     const details = await resolveWaypointFromText(input.label.trim())
     return {
       details,
+      // Usar latLng en lugar de placeId: más confiable en la Routes API para
+      // direcciones ya geocodificadas (evita ambigüedad de placeId viejo/inválido).
       waypoint: {
-        placeId: details.placeId,
+        location: {
+          latLng: {
+            latitude: details.location.latitude,
+            longitude: details.location.longitude,
+          },
+        },
       },
     }
   }
@@ -387,7 +482,11 @@ export async function computeRoutePreview(params: {
       }),
     },
     {
-      fieldMask: 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline',
+      fieldMask:
+        'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,' +
+        'routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,' +
+        'routes.legs.steps.staticDuration,routes.legs.steps.polyline.encodedPolyline,' +
+        'routes.legs.steps.startLocation,routes.legs.steps.endLocation',
       fallbackErrorMessage: 'No pude calcular la ruta en Google Maps',
     }
   )
@@ -415,6 +514,7 @@ export async function computeRoutePreview(params: {
     distanceMeters: route.distanceMeters || 0,
     durationSeconds: parseDurationSeconds(route.duration),
     encodedPolyline: route.polyline.encodedPolyline,
+    steps: parseRouteSteps(route.legs?.[0]?.steps),
     travelMode,
   } satisfies RoutePreview
 }

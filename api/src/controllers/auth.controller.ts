@@ -43,7 +43,7 @@ const emailAuthVerifySchema = z.object({
 
 const emailAuthSetPasswordSchema = z.object({
   email: z.string().email(),
-  code: z.string().trim().min(4).max(10),
+  setupToken: z.string().trim().min(20),
   password: z.string().min(6),
 })
 
@@ -67,6 +67,12 @@ const loginWithPhoneSchema = z.object({
 const verifyMyPhoneSchema = z.object({
   phone: z.string().min(8),
   code: z.string().trim().min(4).max(10),
+})
+
+// city no se persiste todavia: no existe esa columna en el modelo User.
+const updateMeSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  email: z.string().trim().email().optional(),
 })
 
 const googleAuthSchema = z.object({
@@ -108,6 +114,28 @@ function signToken(userId: string): string {
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase()
+}
+
+function signEmailPasswordSetupToken(email: string) {
+  return jwt.sign(
+    { purpose: 'email-password-setup', email: normalizeEmail(email) },
+    process.env.JWT_SECRET!,
+    { expiresIn: '15m' } as jwt.SignOptions
+  )
+}
+
+function verifyEmailPasswordSetupToken(token: string, email: string) {
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET!) as {
+      purpose?: string
+      email?: string
+    }
+
+    return payload.purpose === 'email-password-setup' &&
+      payload.email === normalizeEmail(email)
+  } catch {
+    return false
+  }
 }
 
 async function buildAuthResponse(userId: string) {
@@ -212,8 +240,9 @@ export async function loginWithApple(req: Request, res: Response, next: NextFunc
 }
 
 async function ensureEmailAndPhoneAreAvailable(email?: string, phone?: string) {
+  const normalizedEmail = email ? normalizeEmail(email) : undefined
   const checks = await Promise.all([
-    email ? prisma.user.findUnique({ where: { email } }) : Promise.resolve(null),
+    normalizedEmail ? prisma.user.findUnique({ where: { email: normalizedEmail } }) : Promise.resolve(null),
     phone ? prisma.user.findUnique({ where: { phone } }) : Promise.resolve(null),
   ])
 
@@ -224,15 +253,16 @@ async function ensureEmailAndPhoneAreAvailable(email?: string, phone?: string) {
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
     const data = registerSchema.parse(req.body)
+    const email = normalizeEmail(data.email)
     const normalizedPhone = data.phone ? normalizePhoneNumber(data.phone) : undefined
 
-    await ensureEmailAndPhoneAreAvailable(data.email, normalizedPhone)
+    await ensureEmailAndPhoneAreAvailable(email, normalizedPhone)
 
     const passwordHash = await bcrypt.hash(data.password, 10)
     const user = await prisma.user.create({
       data: {
         name: data.name,
-        email: data.email,
+        email,
         phone: normalizedPhone,
         passwordHash,
       },
@@ -248,8 +278,9 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 export async function login(req: Request, res: Response, next: NextFunction) {
   try {
     const data = loginSchema.parse(req.body)
+    const email = normalizeEmail(data.email)
 
-    const user = await prisma.user.findUnique({ where: { email: data.email } })
+    const user = await prisma.user.findUnique({ where: { email } })
     if (!user?.passwordHash) throw new AppError('Credenciales invalidas', 401)
 
     const valid = await bcrypt.compare(data.password, user.passwordHash)
@@ -287,10 +318,15 @@ export async function startEmailAuth(req: Request, res: Response, next: NextFunc
 export async function verifyEmailCode(req: Request, res: Response, next: NextFunction) {
   try {
     const data = emailAuthVerifySchema.parse(req.body)
-    const record = await verifyEmailAuthCode(data.email, data.code)
+    const email = normalizeEmail(data.email)
+    const record = await verifyEmailAuthCode(email, data.code)
     if (!record) throw new AppError('Codigo invalido o vencido', 401)
 
-    res.json({ ok: true })
+    await consumeEmailAuthCode(record.id)
+    res.json({
+      ok: true,
+      setupToken: signEmailPasswordSetupToken(email),
+    })
   } catch (err) {
     next(err)
   }
@@ -300,8 +336,9 @@ export async function setEmailPassword(req: Request, res: Response, next: NextFu
   try {
     const data = emailAuthSetPasswordSchema.parse(req.body)
     const email = normalizeEmail(data.email)
-    const record = await verifyEmailAuthCode(email, data.code)
-    if (!record) throw new AppError('Codigo invalido o vencido', 401)
+    if (!verifyEmailPasswordSetupToken(data.setupToken, email)) {
+      throw new AppError('Sesion de activacion invalida o vencida', 401)
+    }
 
     const passwordHash = await bcrypt.hash(data.password, 10)
     const existingUser = await prisma.user.findUnique({ where: { email } })
@@ -325,7 +362,6 @@ export async function setEmailPassword(req: Request, res: Response, next: NextFu
           select: publicUserSelect,
         })
 
-    await consumeEmailAuthCode(record.id)
     res.json({ user, token: signToken(user.id) })
   } catch (err) {
     next(err)
@@ -352,15 +388,16 @@ export async function sendPhoneCode(req: Request, res: Response, next: NextFunct
 export async function registerWithPhone(req: Request, res: Response, next: NextFunction) {
   try {
     const data = registerWithPhoneSchema.parse(req.body)
+    const email = data.email ? normalizeEmail(data.email) : undefined
     const phone = normalizePhoneNumber(data.phone)
 
-    await ensureEmailAndPhoneAreAvailable(data.email, phone)
+    await ensureEmailAndPhoneAreAvailable(email, phone)
     await checkPhoneVerificationCode({ phone, code: data.code })
 
     const user = await prisma.user.create({
       data: {
         name: data.name,
-        email: data.email,
+        email,
         phone,
         phoneVerifiedAt: new Date(),
       },
@@ -452,6 +489,34 @@ export async function me(req: AuthRequest, res: Response, next: NextFunction) {
       select: publicUserSelect,
     })
     if (!user) throw new AppError('Usuario no encontrado', 404)
+    res.json({ user })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// El telefono no se toca aca: cambia solo a traves de /auth/phone/verify (con SMS).
+export async function updateMe(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const data = updateMeSchema.parse(req.body)
+    const email = data.email ? normalizeEmail(data.email) : undefined
+
+    if (email) {
+      const existing = await prisma.user.findUnique({ where: { email } })
+      if (existing && existing.id !== req.userId) {
+        throw new AppError('El email ya esta registrado en otra cuenta', 409)
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: {
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(email !== undefined ? { email } : {}),
+      },
+      select: publicUserSelect,
+    })
+
     res.json({ user })
   } catch (err) {
     next(err)

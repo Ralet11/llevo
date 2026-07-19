@@ -1,6 +1,6 @@
 import { View, Text, TextInput, StyleSheet, TextInputProps } from 'react-native'
-import { Colors } from '../../constants/colors'
 import { Theme } from '../../constants/theme'
+import { useTheme } from '../../lib/theme'
 
 type Props = TextInputProps & {
   label?: string
@@ -8,33 +8,31 @@ type Props = TextInputProps & {
 }
 
 export function Input({ label, error, style, ...props }: Props) {
+  const { palette } = useTheme()
+  const colors = palette.colors
   return (
     <View style={styles.wrapper}>
-      {label && <Text style={styles.label}>{label}</Text>}
+      {label && <Text style={[styles.label, { color: colors.textMuted }]}>{label}</Text>}
       <TextInput
-        style={[styles.input, error && styles.inputError, style]}
-        placeholderTextColor={Theme.colors.textSubtle}
+        style={[styles.input, { backgroundColor: colors.surfaceMuted, color: colors.text, borderColor: error ? colors.danger : colors.border }, style]}
+        placeholderTextColor={colors.textSubtle}
         {...props}
       />
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && <Text style={[styles.error, { color: colors.danger }]}>{error}</Text>}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
   wrapper:    { marginBottom: 16 },
-  label:      { fontSize: 12, fontFamily: Theme.fonts.semiBold, color: Colors.textMuted, marginBottom: 6 },
+  label:      { fontSize: 12, fontFamily: Theme.fonts.semiBold, marginBottom: 6 },
   input: {
-    backgroundColor: Colors.surfaceMuted,
     borderRadius: Theme.radius.md,
     paddingHorizontal: 14,
     paddingVertical: 13,
     fontSize: 15,
     fontFamily: Theme.fonts.medium,
-    color: Colors.text,
     borderWidth: 1,
-    borderColor: Colors.border,
   },
-  inputError: { borderColor: Colors.red },
-  error:      { fontSize: 12, fontFamily: Theme.fonts.medium, color: Colors.red, marginTop: 4 },
+  error:      { fontSize: 12, fontFamily: Theme.fonts.medium, marginTop: 4 },
 })

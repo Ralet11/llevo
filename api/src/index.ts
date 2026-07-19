@@ -1,8 +1,10 @@
 import dotenv from 'dotenv'
 dotenv.config()
 
+import { createServer } from 'http'
 import app from './app'
 import prisma from './lib/prisma'
+import { initSocketIO } from './lib/socket'
 import { checkTimeouts } from './services/shipmentQueue'
 
 const PORT = Number(process.env.PORT || 3001)
@@ -55,9 +57,13 @@ async function start() {
     process.exit(1)
   }
 
-  app.listen(PORT, () => {
+  const httpServer = createServer(app)
+  initSocketIO(httpServer)
+
+  httpServer.listen(PORT, () => {
     console.log(`🚀 LLEVO API corriendo en http://localhost:${PORT}`)
     console.log(`   Ambiente: ${process.env.NODE_ENV || 'development'}`)
+    console.log(`   Socket.io activo en ws://localhost:${PORT}`)
   })
 
   // Revisar timeouts de cola cada 5 minutos

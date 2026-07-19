@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import * as SecureStore from 'expo-secure-store'
 import { api, ApiError } from './api'
+import { connectSocket, disconnectSocket } from './socket'
 
 export type DriverVerificationStatus =
   | 'NOT_STARTED'
@@ -25,8 +26,6 @@ export type User = {
   isVerified: boolean
   phoneVerifiedAt?: string | null
   driverVerificationStatus: DriverVerificationStatus
-  driverVerificationSessionId?: string | null
-  driverVerificationUrl?: string | null
   driverVerifiedAt?: string | null
 }
 
@@ -48,6 +47,11 @@ type PhoneCodeIntent = 'login' | 'register'
 type EmailAuthStartResponse = {
   nextStep: 'password' | 'code'
   devCode?: string
+}
+
+type EmailAuthVerifyResponse = {
+  ok: true
+  setupToken: string
 }
 
 type PhoneRegisterData = {
@@ -92,8 +96,8 @@ type AuthContextType = {
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
   startEmailAuth: (email: string) => Promise<EmailAuthStartResponse>
-  verifyEmailCode: (email: string, code: string) => Promise<void>
-  setEmailPassword: (email: string, code: string, password: string) => Promise<void>
+  verifyEmailCode: (email: string, code: string) => Promise<string>
+  setEmailPassword: (email: string, setupToken: string, password: string) => Promise<void>
   register: (data: LegacyRegisterData) => Promise<void>
   sendPhoneCode: (phone: string, intent: PhoneCodeIntent) => Promise<void>
   verifyMyPhone: (phone: string, code: string) => Promise<void>
@@ -104,7 +108,7 @@ type AuthContextType = {
   refreshSession: () => Promise<User | null>
   startDriverVerification: (callbackUrl: string) => Promise<DriverVerificationSession>
   syncDriverVerification: (force?: boolean) => Promise<DriverVerificationStatusResponse | null>
-  updateUser: (data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) => Promise<void>
+  updateUser: (data: Partial<Pick<User, 'name' | 'email'>>) => Promise<void>
   saveDriverProfile: (data: DriverProfile) => Promise<void>
   clearDriverProfile: () => Promise<void>
   logout: () => Promise<void>
@@ -146,8 +150,6 @@ function normalizeUser(user: Partial<User> & { id: string; name: string }): User
     isVerified: Boolean(user.isVerified),
     phoneVerifiedAt: user.phoneVerifiedAt ?? null,
     driverVerificationStatus: user.driverVerificationStatus ?? 'NOT_STARTED',
-    driverVerificationSessionId: user.driverVerificationSessionId ?? null,
-    driverVerificationUrl: user.driverVerificationUrl ?? null,
     driverVerifiedAt: user.driverVerifiedAt ?? null,
   }
 }
@@ -185,6 +187,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(nextToken)
     await setPersistedUser(nextUser)
     setDriverProfile(await readDriverProfile(nextUser.id))
+    connectSocket(nextToken)
   }
 
   async function readDriverProfile(userId: string) {
@@ -227,6 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setToken(storedToken)
         setUser(parsedUser)
         setDriverProfile(await readDriverProfile(parsedUser.id))
+        connectSocket(storedToken)
 
         try {
           await refreshSession(storedToken)
@@ -259,11 +263,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function verifyEmailCode(email: string, code: string) {
-    await api.post('/auth/email/verify-code', { email, code })
+    const response = await api.post<EmailAuthVerifyResponse>('/auth/email/verify-code', { email, code })
+    return response.setupToken
   }
 
-  async function setEmailPassword(email: string, code: string, password: string) {
-    const response = await api.post<AuthResponse>('/auth/email/set-password', { email, code, password })
+  async function setEmailPassword(email: string, setupToken: string, password: string) {
+    const response = await api.post<AuthResponse>('/auth/email/set-password', { email, setupToken, password })
     await persistSession(response.token, normalizeUser(response.user))
   }
 
@@ -318,10 +323,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return response
   }
 
-  async function updateUser(data: Partial<Pick<User, 'name' | 'email' | 'phone' | 'city'>>) {
-    if (!user) return
-    const nextUser = { ...user, ...data }
-    await setPersistedUser(nextUser)
+  // El telefono no se edita desde aca: pasa por /auth/phone/verify (con SMS) via verifyMyPhone.
+  // "city" tampoco: todavia no existe esa columna en el backend, queda solo en el estado local.
+  async function updateUser(data: Partial<Pick<User, 'name' | 'email'>>) {
+    if (!user || !token) return
+    const response = await api.patch<MeResponse>('/auth/me', data, token)
+    const nextUser = normalizeUser(response.user)
+    await setPersistedUser({ ...nextUser, city: user.city })
   }
 
   async function saveDriverProfile(data: DriverProfile) {
@@ -338,6 +346,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function logout() {
+    disconnectSocket()
     await SecureStore.deleteItemAsync(TOKEN_KEY)
     await SecureStore.deleteItemAsync(USER_KEY)
     setToken(null)

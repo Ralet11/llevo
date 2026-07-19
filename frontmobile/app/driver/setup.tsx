@@ -9,15 +9,17 @@ import { CityPicker } from '../../components/ui/CityPicker'
 import { IconButton } from '../../components/ui/IconButton'
 import { Input } from '../../components/ui/Input'
 import { Theme } from '../../constants/theme'
+import { themedStyles } from '../../lib/theme'
 import type { DriverMode, DriverVerificationStatus } from '../../lib/auth'
 import { useAuth } from '../../lib/auth'
 import { getDriverModeMeta } from '../../lib/driver'
 import { api } from '../../lib/api'
+import { fetchVehicles, VEHICLE_TYPE_LABELS, type Vehicle } from '../../lib/vehicles'
 
 type DayKey = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY'
 type VehicleType = 'MOTO' | 'AUTO' | 'CAMIONETA' | 'CAMION'
 type RouteKind = 'INTERCITY' | 'LOCAL'
-type StepKey = 'verify' | 'mode' | 'route' | 'vehicle' | 'capacity' | 'review' | 'basics' | 'coverage'
+type StepKey = 'verify' | 'mode' | 'route' | 'vehicle' | 'capacity' | 'passengers' | 'review' | 'basics' | 'coverage'
 
 // Solo para dev/QA: saltea el paso de verificacion (telefono + Didit) del wizard.
 // Combinar con DIDIT_BYPASS_VERIFICATION=true en el backend. Default: false.
@@ -29,6 +31,7 @@ const STEP_TITLES: Record<StepKey, { title: string; subtitle: string }> = {
   route: { title: 'Tu ruta', subtitle: 'Definí desde dónde, hasta dónde y qué días viajás.' },
   vehicle: { title: 'Tu vehículo', subtitle: 'Contanos con qué vas a transportar.' },
   capacity: { title: 'Capacidad y precio', subtitle: 'Cuánto podés llevar y a qué precio.' },
+  passengers: { title: 'Llevar personas', subtitle: 'Si querés, sumá pasajeros en esta misma ruta.' },
   review: { title: 'Revisión final', subtitle: 'Revisá los datos y confirmá tu perfil.' },
   basics: { title: 'Datos base', subtitle: 'Tu ciudad y con qué te movés.' },
   coverage: { title: 'Cobertura', subtitle: 'Hasta dónde llegás y cuándo estás disponible.' },
@@ -93,6 +96,13 @@ export default function DriverSetupScreen() {
   // Tipo de ruta de entrega: entre ciudades o local (dentro de una ciudad).
   const [routeKind, setRouteKind] = useState<RouteKind>(presetKind ?? 'INTERCITY')
 
+  // Pasajeros: una ruta INTERCITY puede llevar personas ademas de paquetes.
+  const [carriesPassengers, setCarriesPassengers] = useState(false)
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
+  const [seatsOffered, setSeatsOffered] = useState(3)
+  const [pricePerSeat, setPricePerSeat] = useState('')
+
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [verificationBusy, setVerificationBusy] = useState(false)
@@ -106,19 +116,36 @@ export default function DriverSetupScreen() {
     const entrega = (mode ?? 'entrega') === 'entrega'
     const skipVerify = isAddingRoute || SKIP_DRIVER_VERIFICATION
     // Con kind preseteado no mostramos el paso de seleccion de tipo.
+    // El paso de pasajeros solo aplica a rutas entre ciudades.
+    const wantsPassengerStep = (presetKind ?? routeKind) === 'INTERCITY'
+    const entregaCore: StepKey[] = wantsPassengerStep
+      ? ['route', 'vehicle', 'capacity', 'passengers']
+      : ['route', 'vehicle', 'capacity']
     const entregaBase: StepKey[] = presetKind
-      ? ['route', 'vehicle', 'capacity', 'review']
-      : ['mode', 'route', 'vehicle', 'capacity', 'review']
+      ? [...entregaCore, 'review']
+      : ['mode', ...entregaCore, 'review']
     const base: StepKey[] = entrega ? entregaBase : ['basics', 'coverage', 'review']
     return skipVerify ? base : ['verify', ...base]
-  }, [mode, isAddingRoute, presetKind])
+  }, [mode, isAddingRoute, presetKind, routeKind])
 
   useEffect(() => {
     if (!isAddingRoute && !mode) router.replace('/driver')
   }, [mode, isAddingRoute])
 
+  // Cargamos los vehiculos del conductor para el picker del paso de pasajeros.
   useEffect(() => {
-    if (!isAddingRoute && token && user?.driverVerificationSessionId && user.driverVerificationStatus !== 'APPROVED') {
+    if (!token) return
+    fetchVehicles(token).then(setVehicles).catch(() => {})
+  }, [token])
+
+  useEffect(() => {
+    if (
+      !isAddingRoute &&
+      token &&
+      user?.driverVerificationStatus &&
+      user.driverVerificationStatus !== 'NOT_STARTED' &&
+      user.driverVerificationStatus !== 'APPROVED'
+    ) {
       void (async () => {
         try {
           const status = await syncDriverVerification(true)
@@ -126,7 +153,7 @@ export default function DriverSetupScreen() {
         } catch {}
       })()
     }
-  }, [isAddingRoute, token, syncDriverVerification, user?.driverVerificationSessionId, user?.driverVerificationStatus])
+  }, [isAddingRoute, token, syncDriverVerification, user?.driverVerificationStatus])
 
   if (!isAddingRoute && !mode) return null
 
@@ -135,7 +162,10 @@ export default function DriverSetupScreen() {
   const isEntrega = effectiveMode === 'entrega'
   const driverVerificationApproved = user?.driverVerificationStatus === 'APPROVED'
   const verificationOk = driverVerificationApproved || SKIP_DRIVER_VERIFICATION
-  const hasDriverVerificationSession = Boolean(user?.driverVerificationSessionId)
+  const hasDriverVerificationSession =
+    user?.driverVerificationStatus !== undefined &&
+    user.driverVerificationStatus !== 'NOT_STARTED' &&
+    user.driverVerificationStatus !== 'APPROVED'
 
   function getVerificationStatusCopy(status?: DriverVerificationStatus) {
     switch (status) {
@@ -225,6 +255,14 @@ export default function DriverSetupScreen() {
               waypointCities: waypointCities.filter(c => c.trim().length > 0),
               daysOfWeek: selectedDays,
               ...commonRoute,
+              ...(carriesPassengers
+                ? {
+                    carriesPassengers: true,
+                    vehicleId: selectedVehicleId ?? undefined,
+                    seatsOffered,
+                    pricePerSeat: parseFloat(pricePerSeat),
+                  }
+                : {}),
             }
         await api.post('/drivers/routes', routePayload, token)
       }
@@ -297,6 +335,7 @@ export default function DriverSetupScreen() {
 
   const currentStepKey = steps[Math.min(step, steps.length - 1)]
   const isLastStep = step >= steps.length - 1
+  const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) ?? null
   // El paso de ruta cambia de titulo segun el tipo (local vs entre ciudades).
   const heading = currentStepKey === 'route' && routeKind === 'LOCAL'
     ? { title: 'Tu ciudad', subtitle: '¿En qué ciudad vas a hacer repartos?' }
@@ -325,6 +364,14 @@ export default function DriverSetupScreen() {
         if (!maxWeightKg || !Number.isFinite(kg) || kg <= 0) return 'Ingresá el peso máximo en kg.'
         return null
       }
+      case 'passengers':
+        if (carriesPassengers) {
+          if (!selectedVehicleId) return 'Elegí un vehículo para llevar pasajeros.'
+          if (seatsOffered < 1) return 'Ofrecé al menos un asiento.'
+          const price = parseFloat(pricePerSeat)
+          if (!pricePerSeat || !Number.isFinite(price) || price <= 0) return 'Ingresá el precio por asiento.'
+        }
+        return null
       case 'basics':
         if (!city.trim()) return 'Completá tu ciudad base.'
         if (!vehicle.trim()) return `Completá ${meta.vehicleLabel.toLowerCase()}.`
@@ -642,6 +689,95 @@ export default function DriverSetupScreen() {
           </View>
         ) : null}
 
+        {currentStepKey === 'passengers' ? (
+          <View style={styles.form}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              style={[styles.modeCard, carriesPassengers && styles.modeCardActive]}
+              onPress={() => setCarriesPassengers(v => !v)}
+            >
+              <View style={styles.modeIcon}>
+                <Ionicons name="people" size={22} color={Theme.colors.black} />
+              </View>
+              <View style={styles.modeBody}>
+                <Text style={styles.modeTitle}>Llevar personas también</Text>
+                <Text style={styles.modeDesc}>En esta misma ruta podés sumar pasajeros además de paquetes.</Text>
+              </View>
+              {carriesPassengers
+                ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
+                : <View style={styles.modeRadio} />}
+            </TouchableOpacity>
+
+            {!carriesPassengers ? (
+              <Text style={styles.modeHint}>Si lo activás, los usuarios van a poder pedir sumarse a tu viaje ese día.</Text>
+            ) : vehicles.length === 0 ? (
+              <View style={styles.inlineAlert}>
+                <Ionicons name="car-sport" size={15} color={Theme.colors.danger} />
+                <View style={styles.inlineAlertBody}>
+                  <Text style={styles.inlineAlertText}>Primero cargá un vehículo con sus asientos para poder llevar pasajeros.</Text>
+                  <TouchableOpacity style={styles.inlineAlertBtn} activeOpacity={0.8} onPress={() => router.push('/driver/vehicles')}>
+                    <Ionicons name="add" size={14} color={Theme.colors.black} />
+                    <Text style={styles.inlineAlertBtnText}>Agregar vehículo</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.fieldLabel}>Vehículo</Text>
+                {vehicles.map(v => {
+                  const active = selectedVehicleId === v.id
+                  return (
+                    <TouchableOpacity
+                      key={v.id}
+                      activeOpacity={0.85}
+                      style={[styles.modeCard, active && styles.modeCardActive]}
+                      onPress={() => {
+                        setSelectedVehicleId(v.id)
+                        setSeatsOffered(prev => Math.min(prev, v.seats))
+                      }}
+                    >
+                      <View style={styles.modeIcon}>
+                        <Ionicons name={v.type === 'MOTO' ? 'bicycle' : 'car-sport'} size={20} color={Theme.colors.black} />
+                      </View>
+                      <View style={styles.modeBody}>
+                        <Text style={styles.modeTitle}>{VEHICLE_TYPE_LABELS[v.type]}{v.model ? ` · ${v.model}` : ''}</Text>
+                        <Text style={styles.modeDesc}>{v.seats} asientos{v.licensePlate ? ` · ${v.licensePlate}` : ''}</Text>
+                      </View>
+                      {active
+                        ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
+                        : <View style={styles.modeRadio} />}
+                    </TouchableOpacity>
+                  )
+                })}
+
+                <Text style={styles.fieldLabel}>Asientos que ofrecés</Text>
+                <View style={styles.seatStepper}>
+                  <TouchableOpacity style={styles.seatStepBtn} activeOpacity={0.8} onPress={() => setSeatsOffered(seat => Math.max(1, seat - 1))}>
+                    <Ionicons name="remove" size={20} color={Theme.colors.text} />
+                  </TouchableOpacity>
+                  <Text style={styles.seatStepValue}>{seatsOffered}</Text>
+                  <TouchableOpacity
+                    style={styles.seatStepBtn}
+                    activeOpacity={0.8}
+                    onPress={() => setSeatsOffered(seat => Math.min(selectedVehicle?.seats ?? 20, seat + 1))}
+                  >
+                    <Ionicons name="add" size={20} color={Theme.colors.text} />
+                  </TouchableOpacity>
+                  {selectedVehicle ? <Text style={styles.seatStepHint}>de {selectedVehicle.seats} disponibles</Text> : null}
+                </View>
+
+                <Input
+                  label="Precio por asiento *"
+                  value={pricePerSeat}
+                  onChangeText={setPricePerSeat}
+                  placeholder="3500"
+                  keyboardType="decimal-pad"
+                />
+              </>
+            )}
+          </View>
+        ) : null}
+
         {currentStepKey === 'basics' ? (
           <View style={styles.form}>
             <Input
@@ -703,6 +839,9 @@ export default function DriverSetupScreen() {
                   {licensePlate.trim() ? <SummaryRow label="Patente" value={licensePlate.trim()} /> : null}
                   <SummaryRow label="Peso máximo" value={maxWeightKg ? `${maxWeightKg} kg` : '—'} />
                   {pricePerKg.trim() ? <SummaryRow label="Precio por kg" value={pricePerKg.trim()} /> : null}
+                  {carriesPassengers ? (
+                    <SummaryRow label="Pasajeros" value={`${seatsOffered} asiento(s) · $${pricePerSeat || '—'}/asiento`} />
+                  ) : null}
                 </>
               ) : (
                 <>
@@ -766,7 +905,7 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyles(() => StyleSheet.create({
   container: { flex: 1, backgroundColor: Theme.colors.background },
   flex: { flex: 1 },
   header: {
@@ -1058,6 +1197,14 @@ const styles = StyleSheet.create({
   vehicleChipActive: { backgroundColor: Theme.colors.lime, borderColor: Theme.colors.lime },
   vehicleChipText: { color: Theme.colors.textMuted, fontFamily: Theme.fonts.semiBold, fontSize: 13 },
   vehicleChipTextActive: { color: Theme.colors.black },
+  seatStepper: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 },
+  seatStepBtn: {
+    width: 44, height: 44, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.border,
+  },
+  seatStepValue: { color: Theme.colors.text, fontFamily: Theme.fonts.bold, fontSize: 20, minWidth: 28, textAlign: 'center' },
+  seatStepHint: { color: Theme.colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12 },
   notesInput: { minHeight: 108, paddingTop: 14 },
   errorBox: {
     flexDirection: 'row',
@@ -1098,4 +1245,4 @@ const styles = StyleSheet.create({
     fontFamily: Theme.fonts.semiBold,
     fontSize: 13,
   },
-})
+}))

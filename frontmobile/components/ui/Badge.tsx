@@ -13,6 +13,11 @@ const MAP: Record<string, Variant> = {
   CANCELLED:   'error',
   FULL:        'warning',
   IN_PROGRESS: 'info',
+  SEARCHING:   'warning',
+  ASSIGNED:    'info',
+  PICKED_UP:   'info',
+  DELIVERED:   'success',
+  NO_COVERAGE: 'error',
 }
 
 const LABELS: Record<string, string> = {
@@ -24,6 +29,11 @@ const LABELS: Record<string, string> = {
   CANCELLED:   'Cancelado',
   FULL:        'Completo',
   IN_PROGRESS: 'En camino',
+  SEARCHING:   'Buscando conductor',
+  ASSIGNED:    'Conductor asignado',
+  PICKED_UP:   'En camino',
+  DELIVERED:   'Entregado',
+  NO_COVERAGE: 'Sin cobertura',
 }
 
 type Props = { status: string; label?: string }

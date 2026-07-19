@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../../components/app/ScreenSafeArea'
+import { DriverOnlineBar } from '../../../components/app/DriverOnlineBar'
 import { Theme } from '../../../constants/theme'
 import { useAuth } from '../../../lib/auth'
 import { styles } from '../_panel'
@@ -25,6 +26,8 @@ export default function DriverPerfilScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <DriverOnlineBar />
+
         {/* Identidad */}
         <View style={styles.offerCard}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
@@ -55,6 +58,43 @@ export default function DriverPerfilScreen() {
               <ProfileRow icon="car-outline" label="Vehículo" value={driverProfile.vehicle} />
             ) : null}
           </View>
+        </View>
+
+        {/* Tu operación */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Tu operación</Text>
+          <TouchableOpacity
+            style={styles.offerCard}
+            activeOpacity={0.85}
+            onPress={() => router.push('/driver/vehicles')}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={styles.nudgeIcon}>
+                <Ionicons name="car-sport" size={20} color={Theme.colors.black} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailValue}>Mis vehículos</Text>
+                <Text style={styles.heroSub}>Cargá tus vehículos y asientos para llevar pasajeros.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Theme.colors.textMuted} />
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.offerCard, { marginTop: 10 }]}
+            activeOpacity={0.85}
+            onPress={() => router.push('/driver/ride-requests')}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={styles.nudgeIcon}>
+                <Ionicons name="people" size={20} color={Theme.colors.black} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailValue}>Solicitudes de viaje</Text>
+                <Text style={styles.heroSub}>Aprobá o rechazá a los pasajeros que quieren sumarse.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Theme.colors.textMuted} />
+            </View>
+          </TouchableOpacity>
         </View>
 
         {/* Acciones */}

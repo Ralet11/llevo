@@ -35,6 +35,12 @@ const statusQuerySchema = z.object({
   sync: z.enum(['0', '1']).optional(),
 })
 
+const driverVerificationPrivateSelect = {
+  ...publicUserSelect,
+  driverVerificationSessionId: true,
+  driverVerificationUrl: true,
+} as const
+
 function getFallbackCallbackUrl() {
   return process.env.DIDIT_CALLBACK_URL?.trim()
 }
@@ -44,7 +50,7 @@ async function syncDriverVerificationStatus(userId: string, sessionId: string) {
   const updatedUser = await prisma.user.update({
     where: { id: userId },
     data: buildDriverVerificationUpdate(decision),
-    select: publicUserSelect,
+    select: driverVerificationPrivateSelect,
   })
 
   return { decision, user: updatedUser }
@@ -74,7 +80,7 @@ export async function startDriverVerification(req: AuthRequest, res: Response, n
       const updatedUser = await prisma.user.update({
         where: { id: user.id },
         data: buildBypassedDriverVerificationUpdate(user.id),
-        select: publicUserSelect,
+        select: driverVerificationPrivateSelect,
       })
 
       return res.json({
@@ -133,7 +139,7 @@ export async function startDriverVerification(req: AuthRequest, res: Response, n
         ...buildDriverVerificationUpdate(session),
         driverVerificationSubmittedAt: new Date(),
       },
-      select: publicUserSelect,
+      select: driverVerificationPrivateSelect,
     })
 
     res.status(201).json({
@@ -152,7 +158,7 @@ export async function getDriverVerificationStatus(req: AuthRequest, res: Respons
     let user = await prisma.user.findUnique({
       where: { id: req.userId! },
       select: {
-        ...publicUserSelect,
+        ...driverVerificationPrivateSelect,
         driverVerificationSubmittedAt: true,
         driverVerificationCheckedAt: true,
         driverVerificationNotes: true,
@@ -165,7 +171,7 @@ export async function getDriverVerificationStatus(req: AuthRequest, res: Respons
       const updatedUser = await prisma.user.update({
         where: { id: user.id },
         data: buildBypassedDriverVerificationUpdate(user.id),
-        select: publicUserSelect,
+        select: driverVerificationPrivateSelect,
       })
 
       return res.json({

@@ -1,4 +1,7 @@
 import { BASE_URL } from './api'
+import * as SecureStore from 'expo-secure-store'
+
+const TOKEN_KEY = 'llevo_token'
 
 export type PlaceSuggestion = {
   placeId: string
@@ -13,6 +16,15 @@ export type RouteWaypointPayload = {
   label?: string
   latitude?: number
   longitude?: number
+}
+
+export type RouteStep = {
+  instruction: string
+  maneuver: string
+  distanceMeters: number
+  encodedPolyline: string
+  startLocation: { latitude: number; longitude: number }
+  endLocation: { latitude: number; longitude: number }
 }
 
 export type RoutePreview = {
@@ -39,6 +51,7 @@ export type RoutePreview = {
   distanceMeters: number
   durationSeconds: number
   encodedPolyline: string
+  steps: RouteStep[]
   travelMode: 'DRIVE' | 'TWO_WHEELER'
 }
 
@@ -68,6 +81,15 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return payload as T
 }
 
+async function buildAuthHeaders() {
+  const token = await SecureStore.getItemAsync(TOKEN_KEY)
+  const headers: Record<string, string> = {}
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+  return headers
+}
+
 export async function autocompletePlaces(params: {
   input: string
   latitude?: number
@@ -83,7 +105,9 @@ export async function autocompletePlaces(params: {
     citiesOnly: params.citiesOnly ? 'true' : undefined,
   })
 
-  const response = await fetch(`${BASE_URL}/maps/places/autocomplete?${query}`)
+  const response = await fetch(`${BASE_URL}/maps/places/autocomplete?${query}`, {
+    headers: await buildAuthHeaders(),
+  })
   const payload = await parseResponse<{ suggestions: PlaceSuggestion[] }>(response)
   return payload.suggestions
 }
@@ -98,6 +122,7 @@ export async function computeRoutePreview(payload: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...(await buildAuthHeaders()),
     },
     body: JSON.stringify(payload),
   })

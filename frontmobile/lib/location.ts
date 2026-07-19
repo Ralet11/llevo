@@ -94,6 +94,43 @@ export async function watchUserLocation(onUpdate: (region: Region) => void) {
   )
 }
 
+export type DriverPositionFix = {
+  latitude: number
+  longitude: number
+  heading: number | null
+  speed: number | null
+  accuracy: number | null
+  timestamp: number
+}
+
+// Watcher dedicado para navegacion turn-by-turn: a diferencia de watchUserLocation
+// (pensado para centrar el mapa, descarta heading/speed) este expone el fix completo
+// y usa mayor precision/frecuencia. Arrancar solo mientras dura la navegacion activa.
+export async function watchDriverPosition(onUpdate: (fix: DriverPositionFix) => void) {
+  const permission = await Location.getForegroundPermissionsAsync()
+  if (permission.status !== Location.PermissionStatus.GRANTED) {
+    return null
+  }
+
+  return Location.watchPositionAsync(
+    {
+      accuracy: Location.Accuracy.BestForNavigation,
+      distanceInterval: 5,
+      timeInterval: 1200,
+    },
+    position => {
+      onUpdate({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        heading: position.coords.heading,
+        speed: position.coords.speed,
+        accuracy: position.coords.accuracy,
+        timestamp: position.timestamp,
+      })
+    }
+  )
+}
+
 export async function getAddressLabel(latitude: number, longitude: number) {
   try {
     const results = await Location.reverseGeocodeAsync({ latitude, longitude })

@@ -5,6 +5,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
 import { Theme } from '../../constants/theme'
+import { themedStyles } from '../../lib/theme'
 import { useAuth } from '../../lib/auth'
 
 function statusLabel(status?: string) {
@@ -98,7 +99,7 @@ export default function DriverVerificationCallbackScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyles(() => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Theme.colors.background,
@@ -146,4 +147,4 @@ const styles = StyleSheet.create({
   button: {
     marginTop: 22,
   },
-})
+}))

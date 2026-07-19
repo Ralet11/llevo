@@ -16,8 +16,8 @@ import {
 import { SpaceGrotesk_700Bold } from '@expo-google-fonts/space-grotesk'
 import { AuthProvider, useAuth } from '../lib/auth'
 import { api } from '../lib/api'
-import { Colors } from '../constants/colors'
 import { Theme } from '../constants/theme'
+import { ThemeProvider, useTheme } from '../lib/theme'
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -50,6 +50,7 @@ function RootNavigator() {
   const segments = useSegments()
   const router   = useRouter()
   const insets   = useSafeAreaInsets()
+  const { palette, paletteName } = useTheme()
 
   useEffect(() => {
     if (user && token) {
@@ -72,16 +73,16 @@ function RootNavigator() {
 
   if (isLoading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.navy }}>
-        <ActivityIndicator color={Colors.amber} size="large" />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.colors.background }}>
+        <ActivityIndicator color={palette.colors.lime} size="large" />
       </View>
     )
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: Colors.navy }}>
+    <View style={{ flex: 1, backgroundColor: palette.colors.background }}>
       <StatusBar style="light" translucent backgroundColor="transparent" />
-      <Stack screenOptions={{ headerShown: false }}>
+      <Stack key={paletteName} screenOptions={{ headerShown: false }}>
         <Stack.Screen name="onboarding" />
         <Stack.Screen name="auth/login" />
         <Stack.Screen name="auth/register" />
@@ -92,8 +93,8 @@ function RootNavigator() {
           options={{
             headerShown: true,
             headerTitle: 'Detalle del viaje',
-            headerStyle: { backgroundColor: Colors.navy },
-            headerTintColor: Colors.white,
+            headerStyle: { backgroundColor: palette.colors.background },
+            headerTintColor: palette.colors.text,
             headerTitleStyle: { fontWeight: '700' },
           }}
         />
@@ -106,7 +107,7 @@ function RootNavigator() {
           left: 0,
           right: 0,
           height: insets.top,
-          backgroundColor: Colors.navy,
+          backgroundColor: palette.colors.background,
           zIndex: 1000,
           elevation: 1000,
         }}
@@ -141,9 +142,11 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   )
 }

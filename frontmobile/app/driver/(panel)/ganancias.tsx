@@ -3,9 +3,12 @@ import { useFocusEffect } from 'expo-router'
 import { useCallback, useState } from 'react'
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { ScreenSafeArea } from '../../../components/app/ScreenSafeArea'
+import { DriverOnlineBar } from '../../../components/app/DriverOnlineBar'
+import { EarningsTrendChart, type DailyEarning } from '../../../components/app/EarningsTrendChart'
 import { Theme } from '../../../constants/theme'
 import { useAuth } from '../../../lib/auth'
 import { api } from '../../../lib/api'
+import { themedStyles } from '../../../lib/theme'
 import { styles } from '../_panel'
 
 type DriverStats = {
@@ -16,6 +19,7 @@ type DriverStats = {
   earningsTotal: number
   earningsThisWeek: number
   currency: string
+  dailyEarnings: DailyEarning[]
 }
 
 function money(amount: number, currency: string) {
@@ -54,6 +58,8 @@ export default function DriverGananciasScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <DriverOnlineBar />
+
         {loading && !stats ? (
           <View style={styles.centerState}>
             <ActivityIndicator color={Theme.colors.lime} />
@@ -66,6 +72,10 @@ export default function DriverGananciasScreen() {
               <Text style={g.heroValue}>{money(stats?.earningsThisWeek ?? 0, stats?.currency ?? 'ARS')}</Text>
               <Text style={g.heroSub}>{stats?.completedThisWeek ?? 0} entregas completadas</Text>
             </View>
+
+            {stats && stats.dailyEarnings.length > 0 ? (
+              <EarningsTrendChart data={stats.dailyEarnings} currency={stats.currency} />
+            ) : null}
 
             {/* Grid de stats */}
             <View style={g.grid}>
@@ -98,7 +108,7 @@ function StatCard({ icon, label, value }: { icon: React.ComponentProps<typeof Io
   )
 }
 
-const g = StyleSheet.create({
+const g = themedStyles(() => StyleSheet.create({
   heroCard: {
     padding: 22, borderRadius: 22, gap: 6,
     backgroundColor: 'rgba(190,242,100,0.08)',
@@ -130,4 +140,4 @@ const g = StyleSheet.create({
     borderWidth: 1, borderColor: Theme.colors.border,
   },
   noteText: { flex: 1, color: Theme.colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 17 },
-})
+}))

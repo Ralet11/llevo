@@ -47,6 +47,9 @@ model User {
   sentShipments     Shipment[]       @relation("SentShipments")
   shipmentJobs      ShipmentJob[]    @relation("DriverJobs")
   emailAuthCodes    EmailAuthCode[]
+  daysOff           DriverDayOff[]   @relation("DriverDaysOff")
+  vehicles          Vehicle[]        @relation("UserVehicles")
+  passengerBookings RideBooking[]    @relation("PassengerBookings")
 }
 
 enum DriverVerificationStatus {
@@ -199,6 +202,9 @@ model Payment {
   shipmentJobId    String?       @unique
   shipmentJob      ShipmentJob?  @relation(fields: [shipmentJobId], references: [id])
 
+  rideBookingId    String?       @unique
+  rideBooking      RideBooking?  @relation(fields: [rideBookingId], references: [id])
+
   externalId       String?
 
   createdAt        DateTime      @default(now())
@@ -241,12 +247,45 @@ model DriverRoute {
   maxWeightKg       Float
   pricePerKg        Float?
 
+  // Pasajeros: una misma ruta puede llevar paquetes y personas si el conductor lo
+  // habilita. seatsOffered es cuantos asientos ofrece (<= vehicle.seats).
+  vehicleId         String?
+  vehicle           Vehicle?    @relation(fields: [vehicleId], references: [id])
+  carriesPassengers Boolean     @default(false)
+  seatsOffered      Int?
+  pricePerSeat      Float?
+
   isActive          Boolean     @default(true)
 
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
   shipmentJobs      ShipmentJob[]
+  rideBookings      RideBooking[]
+}
+
+// ─────────────────────────────────────────────
+// VEHICLE (flota del conductor)
+// ─────────────────────────────────────────────
+
+model Vehicle {
+  id           String      @id @default(cuid())
+  driverId     String
+  driver       User        @relation("UserVehicles", fields: [driverId], references: [id])
+
+  type         VehicleType
+  licensePlate String?
+  model        String?
+  color        String?
+  // Asientos disponibles para pasajeros (sin contar al conductor).
+  seats        Int         @default(4)
+
+  isActive     Boolean     @default(true)
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  routes       DriverRoute[]
 }
 
 enum DriverRouteKind {
@@ -269,6 +308,20 @@ enum VehicleType {
   AUTO
   CAMIONETA
   CAMION
+}
+
+// Dia que el conductor marca como "no disponible" para viajes INTERCITY
+// programados (no aplica a LOCAL: eso ya se resuelve con isActive/online).
+// date en formato YYYY-MM-DD, mismo formato que ya usa el frontend en dayKey().
+model DriverDayOff {
+  id        String   @id @default(cuid())
+  driverId  String
+  driver    User     @relation("DriverDaysOff", fields: [driverId], references: [id])
+  date      String
+
+  createdAt DateTime @default(now())
+
+  @@unique([driverId, date])
 }
 
 // ─────────────────────────────────────────────
@@ -346,6 +399,45 @@ model ShipmentJob {
 enum JobStatus {
   ACTIVE
   COMPLETED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────
+// RIDE BOOKING (pasajero se suma a una ruta en una fecha)
+// ─────────────────────────────────────────────
+
+model RideBooking {
+  id              String            @id @default(cuid())
+  routeId         String
+  route           DriverRoute       @relation(fields: [routeId], references: [id])
+  passengerId     String
+  passenger       User              @relation("PassengerBookings", fields: [passengerId], references: [id])
+
+  // Fecha del viaje en formato YYYY-MM-DD (hora local AR, igual que DriverDayOff).
+  // Las rutas son recurrentes, la reserva es para un dia concreto.
+  date            String
+  seats           Int               @default(1)
+  originCity      String
+  destinationCity String
+  // Snapshot del precio al momento de solicitar (la ruta puede cambiarlo despues).
+  pricePerSeat    Float?
+
+  status          RideBookingStatus @default(PENDING)
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  payment         Payment?
+
+  @@index([routeId, date])
+  @@index([passengerId])
+}
+
+enum RideBookingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
   CANCELLED
 }
 

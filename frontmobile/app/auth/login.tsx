@@ -25,6 +25,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [emailSetupToken, setEmailSetupToken] = useState('')
   const [emailStep, setEmailStep] = useState<EmailStep>('email')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -34,6 +35,7 @@ export default function LoginScreen() {
     setEmail(nextEmail)
     setPassword('')
     setConfirmPassword('')
+    setEmailSetupToken('')
     setCode('')
     setEmailStep('email')
   }
@@ -129,7 +131,8 @@ export default function LoginScreen() {
 
       if (emailStep === 'code') {
         if (!code.trim()) throw new Error('Ingresa el código recibido')
-        await verifyEmailCode(email, code)
+        const setupToken = await verifyEmailCode(email, code)
+        setEmailSetupToken(setupToken)
         setEmailStep('setPassword')
         setInfo('Código verificado. Ahora elige tu contraseña.')
         return
@@ -141,8 +144,11 @@ export default function LoginScreen() {
       if (password !== confirmPassword) {
         throw new Error('Las contraseñas no coinciden')
       }
+      if (!emailSetupToken) {
+        throw new Error('Tu sesión de activación venció. Solicita un nuevo código.')
+      }
 
-      await setEmailPassword(email, code, password)
+      await setEmailPassword(email, emailSetupToken, password)
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'No pude continuar con email')
     } finally {
@@ -168,6 +174,7 @@ export default function LoginScreen() {
       }
 
       setEmailStep('code')
+      setEmailSetupToken('')
       setInfo(
         response.devCode
           ? `Te enviamos un código nuevo por email. Desarrollo: ${response.devCode}`

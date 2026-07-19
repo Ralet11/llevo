@@ -1,6 +1,6 @@
 import { TouchableOpacity, Text, ActivityIndicator, StyleSheet, ViewStyle } from 'react-native'
-import { Colors } from '../../constants/colors'
 import { Theme } from '../../constants/theme'
+import { useTheme } from '../../lib/theme'
 
 type Variant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger'
 
@@ -18,13 +18,15 @@ export function Button({
   label, onPress, variant = 'primary',
   loading = false, disabled = false, style, fullWidth = true,
 }: Props) {
+  const { palette } = useTheme()
+  const colors = palette.colors
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled || loading}
       style={[
         styles.base,
-        styles[variant],
+        variantStyles[variant](colors),
         fullWidth && styles.fullWidth,
         (disabled || loading) && styles.disabled,
         style,
@@ -32,8 +34,8 @@ export function Button({
       activeOpacity={0.8}
     >
       {loading
-        ? <ActivityIndicator color={variant === 'primary' ? Theme.colors.black : Theme.colors.lime} />
-        : <Text style={[styles.label, styles[`label_${variant}`]]}>{label}</Text>
+        ? <ActivityIndicator color={variant === 'primary' ? colors.black : colors.lime} />
+        : <Text style={[styles.label, labelStyles[variant](colors)]}>{label}</Text>
       }
     </TouchableOpacity>
   )
@@ -51,16 +53,21 @@ const styles = StyleSheet.create({
   fullWidth: { width: '100%' },
   disabled: { opacity: 0.5 },
 
-  primary:   { backgroundColor: Colors.lime },
-  secondary: { backgroundColor: Colors.surfaceElevated },
-  outline:   { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.border },
-  ghost:     { backgroundColor: 'transparent' },
-  danger:    { backgroundColor: Colors.red },
-
   label:          { fontSize: 15, fontFamily: Theme.fonts.bold },
-  label_primary:  { color: Theme.colors.black },
-  label_secondary:{ color: Colors.white },
-  label_outline:  { color: Colors.white },
-  label_ghost:    { color: Colors.lime },
-  label_danger:   { color: Colors.white },
 })
+
+const variantStyles = {
+  primary: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.lime }),
+  secondary: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.surfaceElevated }),
+  outline: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: 'transparent' as const, borderWidth: 1.5, borderColor: colors.border }),
+  ghost: () => ({ backgroundColor: 'transparent' as const }),
+  danger: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.danger }),
+}
+
+const labelStyles = {
+  primary: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ color: colors.black }),
+  secondary: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ color: colors.text }),
+  outline: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ color: colors.text }),
+  ghost: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ color: colors.lime }),
+  danger: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ color: colors.white }),
+}

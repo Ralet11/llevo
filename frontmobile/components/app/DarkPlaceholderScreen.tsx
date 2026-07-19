@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
 import { StyleSheet, Text, View } from 'react-native'
 import { Theme } from '../../constants/theme'
+import { useTheme } from '../../lib/theme'
 import { ScreenSafeArea } from './ScreenSafeArea'
 import { IconButton } from '../ui/IconButton'
 
@@ -14,6 +15,9 @@ type Props = {
 }
 
 export function DarkPlaceholderScreen({ title, description, icon }: Props) {
+  const { palette } = useTheme()
+  const colors = palette.colors
+  const styles = createStyles(colors)
   return (
     <ScreenSafeArea style={styles.container}>
       <View style={styles.header}>
@@ -24,7 +28,7 @@ export function DarkPlaceholderScreen({ title, description, icon }: Props) {
 
       <View style={styles.content}>
         <View style={styles.iconWrap}>
-          <Ionicons name={icon} size={34} color={Theme.colors.lime} />
+          <Ionicons name={icon} size={34} color={colors.lime} />
         </View>
         <Text style={styles.title}>{title}</Text>
         <Text style={styles.description}>{description}</Text>
@@ -34,10 +38,10 @@ export function DarkPlaceholderScreen({ title, description, icon }: Props) {
   )
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Theme.colors.background,
+    backgroundColor: colors.background,
   },
   header: {
     height: 58,
@@ -47,7 +51,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   headerTitle: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.bold,
     fontSize: 15,
   },
@@ -66,19 +70,19 @@ const styles = StyleSheet.create({
     borderRadius: 38,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.surfaceElevated,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: Theme.colors.border,
+    borderColor: colors.border,
     marginBottom: 20,
   },
   title: {
-    color: Theme.colors.text,
+    color: colors.text,
     fontFamily: Theme.fonts.display,
     fontSize: 28,
     textAlign: 'center',
   },
   description: {
-    color: Theme.colors.textMuted,
+    color: colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 15,
     lineHeight: 22,
@@ -86,7 +90,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   note: {
-    color: Theme.colors.lime,
+    color: colors.lime,
     fontFamily: Theme.fonts.semiBold,
     fontSize: 12,
     marginTop: 20,

@@ -91,7 +91,8 @@ export default function VerifyPhoneScreen() {
 
           <Text style={styles.title}>Confirma tu numero.</Text>
           <Text style={styles.subtitle}>
-            Necesitamos un telefono verificado antes de habilitar la verificacion de conductor con Didit.
+            Te mandamos un codigo por SMS para confirmar tu telefono. Lo vamos a usar para que puedan
+            contactarte al coordinar retiros y entregas.
           </Text>
 
           <View style={styles.formCard}>

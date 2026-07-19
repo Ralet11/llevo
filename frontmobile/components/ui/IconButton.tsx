@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import { StyleSheet, TouchableOpacity, ViewStyle } from 'react-native'
-import { Theme } from '../../constants/theme'
+import { useTheme } from '../../lib/theme'
 
 type IconName = React.ComponentProps<typeof Ionicons>['name']
 
@@ -13,13 +13,15 @@ type Props = {
 }
 
 export function IconButton({ name, onPress, size = 22, variant = 'dark', style }: Props) {
+  const { palette } = useTheme()
+  const colors = palette.colors
   return (
     <TouchableOpacity
       activeOpacity={0.82}
       onPress={onPress}
-      style={[styles.base, styles[variant], style]}
+      style={[styles.base, variantStyles[variant](colors), style]}
     >
-      <Ionicons name={name} size={size} color={variant === 'lime' ? Theme.colors.black : Theme.colors.text} />
+      <Ionicons name={name} size={size} color={variant === 'lime' ? colors.black : colors.text} />
     </TouchableOpacity>
   )
 }
@@ -33,16 +35,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
   },
-  dark: {
-    backgroundColor: Theme.colors.mapOverlay,
-    borderColor: Theme.colors.borderSoft,
-  },
-  light: {
-    backgroundColor: Theme.colors.surfaceMuted,
-    borderColor: Theme.colors.border,
-  },
-  lime: {
-    backgroundColor: Theme.colors.lime,
-    borderColor: Theme.colors.lime,
-  },
 })
+
+const variantStyles = {
+  dark: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.mapOverlay, borderColor: colors.borderSoft }),
+  light: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.surfaceMuted, borderColor: colors.border }),
+  lime: (colors: ReturnType<typeof useTheme>['palette']['colors']) => ({ backgroundColor: colors.lime, borderColor: colors.lime }),
+}
