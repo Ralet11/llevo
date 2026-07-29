@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons'
 import * as ExpoLinking from 'expo-linking'
-import { router, useLocalSearchParams } from 'expo-router'
-import { useEffect, useMemo, useState } from 'react'
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Button } from '../../components/ui/Button'
@@ -14,7 +14,7 @@ import type { DriverMode, DriverVerificationStatus } from '../../lib/auth'
 import { useAuth } from '../../lib/auth'
 import { getDriverModeMeta } from '../../lib/driver'
 import { api } from '../../lib/api'
-import { fetchVehicles, VEHICLE_TYPE_LABELS, type Vehicle } from '../../lib/vehicles'
+import { createVehicle, fetchVehicles, VEHICLE_TYPE_LABELS, type Vehicle } from '../../lib/vehicles'
 
 type DayKey = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY'
 type VehicleType = 'MOTO' | 'AUTO' | 'CAMIONETA' | 'CAMION'
@@ -24,6 +24,7 @@ type StepKey = 'verify' | 'mode' | 'route' | 'vehicle' | 'capacity' | 'passenger
 // Solo para dev/QA: saltea el paso de verificacion (telefono + Didit) del wizard.
 // Combinar con DIDIT_BYPASS_VERIFICATION=true en el backend. Default: false.
 const SKIP_DRIVER_VERIFICATION = process.env.EXPO_PUBLIC_SKIP_DRIVER_VERIFICATION === 'true'
+const DRAFT_VEHICLE_ID = '__setup_vehicle__'
 
 const STEP_TITLES: Record<StepKey, { title: string; subtitle: string }> = {
   verify: { title: 'Verificación', subtitle: 'Confirmá tu teléfono e identidad antes de poder operar.' },
@@ -132,11 +133,24 @@ export default function DriverSetupScreen() {
     if (!isAddingRoute && !mode) router.replace('/driver')
   }, [mode, isAddingRoute])
 
-  // Cargamos los vehiculos del conductor para el picker del paso de pasajeros.
-  useEffect(() => {
+  // Se vuelve a consultar al recuperar foco para incluir un vehiculo creado desde
+  // la pantalla de flota sin obligar al conductor a reiniciar el onboarding.
+  const loadVehicles = useCallback(() => {
     if (!token) return
-    fetchVehicles(token).then(setVehicles).catch(() => {})
+    fetchVehicles(token)
+      .then(nextVehicles => {
+        setVehicles(nextVehicles)
+        setSelectedVehicleId(currentId => {
+          if (currentId === DRAFT_VEHICLE_ID && nextVehicles.length > 0) return nextVehicles[0].id
+          return currentId
+        })
+      })
+      .catch(() => {})
   }, [token])
+
+  useFocusEffect(useCallback(() => {
+    loadVehicles()
+  }, [loadVehicles]))
 
   useEffect(() => {
     if (
@@ -160,6 +174,22 @@ export default function DriverSetupScreen() {
   const effectiveMode = mode ?? 'entrega'
   const meta = getDriverModeMeta(effectiveMode)
   const isEntrega = effectiveMode === 'entrega'
+  const defaultVehicleSeats = vehicleType === 'MOTO' ? 1 : 4
+  const draftVehicle: Vehicle | null = vehicleType
+    ? {
+        id: DRAFT_VEHICLE_ID,
+        type: vehicleType,
+        licensePlate: licensePlate.trim() || null,
+        model: vehicleModel.trim() || null,
+        color: vehicleColor.trim() || null,
+        seats: defaultVehicleSeats,
+        isActive: true,
+        createdAt: '',
+      }
+    : null
+  // Mientras se completa el onboarding, el vehiculo del paso anterior es una
+  // opcion valida aunque todavia no exista en la base.
+  const passengerVehicles = vehicles.length > 0 ? vehicles : draftVehicle ? [draftVehicle] : []
   const driverVerificationApproved = user?.driverVerificationStatus === 'APPROVED'
   const verificationOk = driverVerificationApproved || SKIP_DRIVER_VERIFICATION
   const hasDriverVerificationSession =
@@ -238,6 +268,23 @@ export default function DriverSetupScreen() {
 
     try {
       if (isEntrega && token) {
+        let routeVehicleId = selectedVehicleId
+        const mustCreateDraftVehicle = routeVehicleId === DRAFT_VEHICLE_ID
+          || (!routeVehicleId && !isAddingRoute)
+
+        if (mustCreateDraftVehicle && vehicleType) {
+          const createdVehicle = await createVehicle(token, {
+            type: vehicleType,
+            licensePlate: licensePlate.trim() || undefined,
+            model: vehicleModel.trim() || undefined,
+            color: vehicleColor.trim() || undefined,
+            seats: Math.max(defaultVehicleSeats, carriesPassengers ? seatsOffered : 1),
+          })
+          routeVehicleId = createdVehicle.id
+          setVehicles(currentVehicles => [createdVehicle, ...currentVehicles])
+          setSelectedVehicleId(createdVehicle.id)
+        }
+
         const commonRoute = {
           vehicleType,
           licensePlate: licensePlate.trim() || undefined,
@@ -245,6 +292,7 @@ export default function DriverSetupScreen() {
           vehicleColor: vehicleColor.trim() || undefined,
           maxWeightKg: parseFloat(maxWeightKg),
           pricePerKg: pricePerKg ? parseFloat(pricePerKg) : undefined,
+          vehicleId: routeVehicleId ?? undefined,
         }
         const routePayload = routeKind === 'LOCAL'
           ? { kind: 'LOCAL', city: originCity.trim(), ...commonRoute }
@@ -258,7 +306,6 @@ export default function DriverSetupScreen() {
               ...(carriesPassengers
                 ? {
                     carriesPassengers: true,
-                    vehicleId: selectedVehicleId ?? undefined,
                     seatsOffered,
                     pricePerSeat: parseFloat(pricePerSeat),
                   }
@@ -335,7 +382,26 @@ export default function DriverSetupScreen() {
 
   const currentStepKey = steps[Math.min(step, steps.length - 1)]
   const isLastStep = step >= steps.length - 1
-  const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) ?? null
+  const selectedVehicle = passengerVehicles.find(v => v.id === selectedVehicleId) ?? null
+
+  function selectPassengerVehicle(nextVehicle: Vehicle) {
+    setSelectedVehicleId(nextVehicle.id)
+    setSeatsOffered(previousSeats => Math.min(previousSeats, nextVehicle.seats))
+    if (nextVehicle.id !== DRAFT_VEHICLE_ID) {
+      setVehicleType(nextVehicle.type)
+      setLicensePlate(nextVehicle.licensePlate ?? '')
+      setVehicleModel(nextVehicle.model ?? '')
+      setVehicleColor(nextVehicle.color ?? '')
+    }
+  }
+
+  function togglePassengers() {
+    const nextValue = !carriesPassengers
+    setCarriesPassengers(nextValue)
+    if (nextValue && !selectedVehicleId && passengerVehicles.length > 0) {
+      selectPassengerVehicle(passengerVehicles[0])
+    }
+  }
   // El paso de ruta cambia de titulo segun el tipo (local vs entre ciudades).
   const heading = currentStepKey === 'route' && routeKind === 'LOCAL'
     ? { title: 'Tu ciudad', subtitle: '¿En qué ciudad vas a hacer repartos?' }
@@ -542,7 +608,7 @@ export default function DriverSetupScreen() {
                 : <View style={styles.modeRadio} />}
             </TouchableOpacity>
 
-            <Text style={styles.modeHint}>Después podés sumar el otro tipo desde "Mis rutas".</Text>
+            <Text style={styles.modeHint}>Después podés sumar el otro tipo desde &quot;Mis rutas&quot;.</Text>
           </View>
         ) : null}
 
@@ -694,7 +760,7 @@ export default function DriverSetupScreen() {
             <TouchableOpacity
               activeOpacity={0.85}
               style={[styles.modeCard, carriesPassengers && styles.modeCardActive]}
-              onPress={() => setCarriesPassengers(v => !v)}
+              onPress={togglePassengers}
             >
               <View style={styles.modeIcon}>
                 <Ionicons name="people" size={22} color={Theme.colors.black} />
@@ -710,7 +776,7 @@ export default function DriverSetupScreen() {
 
             {!carriesPassengers ? (
               <Text style={styles.modeHint}>Si lo activás, los usuarios van a poder pedir sumarse a tu viaje ese día.</Text>
-            ) : vehicles.length === 0 ? (
+            ) : passengerVehicles.length === 0 ? (
               <View style={styles.inlineAlert}>
                 <Ionicons name="car-sport" size={15} color={Theme.colors.danger} />
                 <View style={styles.inlineAlertBody}>
@@ -724,17 +790,14 @@ export default function DriverSetupScreen() {
             ) : (
               <>
                 <Text style={styles.fieldLabel}>Vehículo</Text>
-                {vehicles.map(v => {
+                {passengerVehicles.map(v => {
                   const active = selectedVehicleId === v.id
                   return (
                     <TouchableOpacity
                       key={v.id}
                       activeOpacity={0.85}
                       style={[styles.modeCard, active && styles.modeCardActive]}
-                      onPress={() => {
-                        setSelectedVehicleId(v.id)
-                        setSeatsOffered(prev => Math.min(prev, v.seats))
-                      }}
+                      onPress={() => selectPassengerVehicle(v)}
                     >
                       <View style={styles.modeIcon}>
                         <Ionicons name={v.type === 'MOTO' ? 'bicycle' : 'car-sport'} size={20} color={Theme.colors.black} />
