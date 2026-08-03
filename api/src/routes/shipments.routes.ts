@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { authenticate } from '../middleware/authenticate'
 import {
   createShipment,
+  getShipmentQuote,
   getShipmentById,
   getMyShipments,
   getPendingForDriver,
@@ -19,6 +20,7 @@ import {
 const router = Router()
 
 router.get('/mine', authenticate, getMyShipments)
+router.post('/quote', authenticate, getShipmentQuote)
 router.get('/pending-for-driver', authenticate, getPendingForDriver)
 router.get('/upcoming-for-driver', authenticate, getUpcomingForDriver)
 router.get('/agenda-for-driver', authenticate, getAgendaForDriver)

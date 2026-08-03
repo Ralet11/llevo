@@ -49,11 +49,34 @@ export default function DriverInicioScreen() {
     }
   }, [params.date])
 
+  const fetchAgenda = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ items: AgendaItem[] }>('/shipments/agenda-for-driver', token)
+      setAgendaItems(data.items)
+    } catch {}
+  }, [token])
+
+  const fetchPending = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ shipment: Shipment | null }>('/shipments/pending-for-driver', token)
+      setPendingShipment(data.shipment)
+    } catch {}
+  }, [token])
+
+  const fetchData = useCallback(async () => {
+    if (!token) return
+    setLoading(true)
+    await Promise.all([fetchAgenda(), fetchPending(), refetchRoutes()])
+    setLoading(false)
+  }, [fetchAgenda, fetchPending, refetchRoutes, token])
+
   useFocusEffect(
     useCallback(() => {
       if (!driverProfile?.onboardingCompleted) { router.replace('/driver'); return }
       void fetchData()
-    }, [token, driverProfile])
+    }, [driverProfile, fetchData])
   )
 
   // Socket: recibe nueva oferta o cambio de estado en tiempo real
@@ -85,30 +108,7 @@ export default function DriverInicioScreen() {
       socket.off('shipment:status_changed', onStatusChanged)
       socket.off('connect', onReconnect)
     }
-  }, [token])
-
-  async function fetchData() {
-    if (!token) return
-    setLoading(true)
-    await Promise.all([fetchAgenda(), fetchPending(), refetchRoutes()])
-    setLoading(false)
-  }
-
-  async function fetchAgenda() {
-    if (!token) return
-    try {
-      const data = await api.get<{ items: AgendaItem[] }>('/shipments/agenda-for-driver', token)
-      setAgendaItems(data.items)
-    } catch {}
-  }
-
-  async function fetchPending() {
-    if (!token) return
-    try {
-      const data = await api.get<{ shipment: Shipment | null }>('/shipments/pending-for-driver', token)
-      setPendingShipment(data.shipment)
-    } catch {}
-  }
+  }, [fetchAgenda, fetchPending, token])
 
   async function handleRespond(shipmentId: string, action: 'accept' | 'reject') {
     if (!token) return

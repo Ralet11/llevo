@@ -6,46 +6,12 @@ import app from './app'
 import prisma from './lib/prisma'
 import { initSocketIO } from './lib/socket'
 import { checkTimeouts } from './services/shipmentQueue'
-
-const PORT = Number(process.env.PORT || 3001)
-
-function validateDatabaseUrl() {
-  const databaseUrl = process.env.DATABASE_URL
-
-  if (!databaseUrl) {
-    throw new Error('Falta DATABASE_URL en api/.env')
-  }
-
-  let parsed: URL
-  try {
-    parsed = new URL(databaseUrl)
-  } catch {
-    throw new Error('DATABASE_URL no es una URL valida de PostgreSQL')
-  }
-
-  const username = decodeURIComponent(parsed.username)
-  const password = decodeURIComponent(parsed.password)
-
-  if (!username || username === 'USER' || !password || password === 'PASSWORD') {
-    throw new Error(
-      'DATABASE_URL sigue con credenciales de ejemplo. Reemplaza USER y PASSWORD por tu usuario y clave reales de PostgreSQL en api/.env'
-    )
-  }
-}
-
-function validateEnv() {
-  validateDatabaseUrl()
-
-  if (!process.env.JWT_SECRET) {
-    throw new Error('Falta JWT_SECRET en api/.env')
-  }
-  if (process.env.JWT_SECRET.length < 32) {
-    throw new Error('JWT_SECRET debe tener al menos 32 caracteres')
-  }
-}
+import { loadEnv } from './config/env'
+import { publishExpiredTravelRequests } from './services/travelRequestMatching'
 
 async function start() {
-  validateEnv()
+  const env = loadEnv()
+  const PORT = env.PORT
 
   try {
     await prisma.$connect()
@@ -60,16 +26,25 @@ async function start() {
   const httpServer = createServer(app)
   initSocketIO(httpServer)
 
-  httpServer.listen(PORT, () => {
+  httpServer.listen(env.PORT, () => {
     console.log(`🚀 LLEVO API corriendo en http://localhost:${PORT}`)
     console.log(`   Ambiente: ${process.env.NODE_ENV || 'development'}`)
     console.log(`   Socket.io activo en ws://localhost:${PORT}`)
   })
 
-  // Revisar timeouts de cola cada 5 minutos
+  async function reconcileQueues() {
+    await Promise.all([
+      checkTimeouts(),
+      publishExpiredTravelRequests(),
+    ])
+  }
+
+  // El estado y deadlines están en PostgreSQL: la reconciliación es idempotente
+  // y recupera solicitudes vencidas incluso después de reiniciar el proceso.
+  void reconcileQueues().catch(err => console.error('[queue] Error en reconciliación:', err))
   setInterval(() => {
-    checkTimeouts().catch(err => console.error('[queue] Error en checkTimeouts:', err))
-  }, 5 * 60 * 1000)
+    reconcileQueues().catch(err => console.error('[queue] Error en reconciliación:', err))
+  }, 60 * 1000)
 }
 
 void start()

@@ -50,6 +50,9 @@ model User {
   daysOff           DriverDayOff[]   @relation("DriverDaysOff")
   vehicles          Vehicle[]        @relation("UserVehicles")
   passengerBookings RideBooking[]    @relation("PassengerBookings")
+  travelRequests    TravelRequest[]  @relation("PassengerTravelRequests")
+  travelRequestCandidates TravelRequestCandidate[] @relation("TravelRequestCandidateDrivers")
+  routeAlerts       RouteAlert[]
 }
 
 enum DriverVerificationStatus {
@@ -185,6 +188,11 @@ model Payment {
   amount           Float
   platformFee      Float
   netAmount        Float
+  // Valores monetarios canónicos en centavos. Los Float previos se conservan
+  // temporalmente por compatibilidad con datos existentes.
+  amountCents      Int           @default(0)
+  platformFeeCents Int           @default(0)
+  netAmountCents   Int           @default(0)
   currency         String        @default("ARS")
   status           PaymentStatus @default(PENDING)
 
@@ -206,6 +214,8 @@ model Payment {
   rideBooking      RideBooking?  @relation(fields: [rideBookingId], references: [id])
 
   externalId       String?
+  providerPreferenceId String? @unique
+  providerPaymentId String? @unique
 
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
@@ -262,6 +272,8 @@ model DriverRoute {
 
   shipmentJobs      ShipmentJob[]
   rideBookings      RideBooking[]
+  travelRequestCandidates TravelRequestCandidate[]
+  matchedTravelRequests TravelRequest[] @relation("MatchedTravelRequests")
 }
 
 // ─────────────────────────────────────────────
@@ -341,6 +353,8 @@ model Shipment {
   weightKg             Float
   packageSize          PackageSize
   preferredDate        DateTime?
+  estimatedDistanceKm  Float         @default(0)
+  estimatedDurationMin Int           @default(0)
 
   pickupContactName    String
   pickupContactPhone   String
@@ -390,6 +404,16 @@ model ShipmentJob {
   pickedUpAt  DateTime?
   deliveredAt DateTime?
 
+  // Cotizacion inmutable aceptada por remitente y conductor. Todos los montos
+  // son ARS y se copian aqui para que editar una ruta no cambie un envio activo.
+  baseFee          Float @default(0)
+  distanceFee      Float @default(0)
+  timeFee          Float @default(0)
+  weightFee        Float @default(0)
+  sizeSurcharge    Float @default(0)
+  platformFee      Float @default(0)
+  quotedTotal      Float @default(0)
+
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -424,6 +448,10 @@ model RideBooking {
 
   status          RideBookingStatus @default(PENDING)
 
+  // Si la reserva surgió de una intención de viaje, conserva su trazabilidad.
+  travelRequestId String?           @unique
+  travelRequest   TravelRequest?    @relation(fields: [travelRequestId], references: [id])
+
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -438,6 +466,118 @@ enum RideBookingStatus {
   APPROVED
   REJECTED
   PAID
+  CANCELLED
+}
+
+// Intención persistente de un pasajero. Puede nacer sin que exista todavía una
+// ruta confirmada y se publica para que un conductor compatible la tome.
+model TravelRequest {
+  id              String              @id @default(cuid())
+  passengerId     String
+  passenger       User                @relation("PassengerTravelRequests", fields: [passengerId], references: [id])
+
+  originCity      String
+  destinationCity String
+  // Fecha local de servicio YYYY-MM-DD (America/Argentina/Buenos_Aires).
+  date            String
+  seats           Int                 @default(1)
+
+  status          TravelRequestStatus @default(SEARCHING)
+  searchDeadline  DateTime
+  publishedAt     DateTime?
+  matchedAt       DateTime?
+  cancelledAt     DateTime?
+  expiresAt       DateTime?
+
+  matchedRouteId  String?
+  matchedRoute    DriverRoute?        @relation("MatchedTravelRequests", fields: [matchedRouteId], references: [id])
+  candidates      TravelRequestCandidate[]
+  events          TravelRequestEvent[]
+  booking         RideBooking?
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([passengerId, status])
+  @@index([status, searchDeadline])
+  @@index([status, date])
+  @@index([matchedRouteId])
+}
+
+// Registro auditable de cada conductor/ruta notificado por una solicitud.
+model TravelRequestCandidate {
+  id              String                      @id @default(cuid())
+  travelRequestId String
+  travelRequest   TravelRequest               @relation(fields: [travelRequestId], references: [id], onDelete: Cascade)
+  routeId         String
+  route           DriverRoute                 @relation(fields: [routeId], references: [id])
+  driverId        String
+  driver          User                        @relation("TravelRequestCandidateDrivers", fields: [driverId], references: [id])
+
+  status          TravelRequestCandidateStatus @default(NOTIFIED)
+  notifiedAt      DateTime                    @default(now())
+  respondedAt     DateTime?
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+
+  @@unique([travelRequestId, routeId])
+  @@index([driverId, status])
+  @@index([travelRequestId, status])
+}
+
+enum TravelRequestStatus {
+  SEARCHING
+  PUBLISHED
+  MATCHED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum TravelRequestCandidateStatus {
+  NOTIFIED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+// Historial inmutable para soporte, UI y auditoría de una intención de viaje.
+model TravelRequestEvent {
+  id              String        @id @default(cuid())
+  travelRequestId String
+  travelRequest   TravelRequest @relation(fields: [travelRequestId], references: [id], onDelete: Cascade)
+  type            TravelRequestEventType
+  actorUserId     String?
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+
+  @@index([travelRequestId, createdAt])
+}
+
+// Alerta pasiva: no crea una demanda ni contacta conductores. Solo avisa al
+// pasajero si posteriormente se publica una ruta que cubre su tramo y fecha.
+model RouteAlert {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  originCity      String
+  destinationCity String
+  date            String
+  notifiedAt      DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, originCity, destinationCity, date])
+  @@index([date, cancelledAt])
+}
+
+enum TravelRequestEventType {
+  CREATED
+  CANDIDATES_NOTIFIED
+  PUBLISHED
+  MATCHED
   CANCELLED
 }
 

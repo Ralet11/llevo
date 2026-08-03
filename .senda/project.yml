@@ -1,0 +1,73 @@
+version: 1
+project: Llevo
+language: es-AR
+
+code:
+  roots:
+    - api/src
+    - frontmobile
+  documentation:
+    - docs
+    - .senda
+
+domains:
+  ride_payments:
+    labels: [pagos de viajes, cobro de viajes, checkout, pagar una reserva]
+    code_areas: [api/src/controllers/payments.controller.ts, api/src/controllers/rideBookings.controller.ts]
+    documentation: [.senda/domains/ride-payments.md]
+    tests: []
+  trips:
+    labels: [viajes, buscar viajes, reserva de viaje, pasajero, conductor, seguimiento de ruta]
+    code_areas: [api/src/controllers/trips.controller.ts, api/src/controllers/rideBookings.controller.ts, api/src/controllers/travelRequests.controller.ts, api/src/services/routeAlerts.ts]
+    documentation: [.senda/domains/trips.md]
+    tests: []
+  shipments:
+    labels: [envíos, paquetería, cotización de envío, paquete]
+    code_areas: [api/src/controllers/shipments.controller.ts, api/src/services/shipmentPricing.ts, api/src/services/shipmentQueue.ts]
+    documentation: [.senda/domains/shipments.md]
+    tests: []
+  driver_earnings:
+    labels: [ganancias de conductor, cobro por envío, precio por asiento]
+    code_areas: [api/src/controllers/payments.controller.ts, api/src/controllers/drivers.controller.ts]
+    documentation: [.senda/domains/driver-earnings.md]
+    tests: []
+  cancellations:
+    labels: [cancelar viaje, cancelar reserva, cancelar envío]
+    code_areas: [api/src/controllers/rideBookings.controller.ts, api/src/controllers/shipments.controller.ts, api/src/controllers/travelRequests.controller.ts]
+    documentation: [.senda/domains/cancellations.md]
+    tests: []
+  coverage:
+    labels: [cobertura, rutas disponibles, ciudades, disponibilidad]
+    code_areas: [api/src/lib/matching.ts, api/src/controllers/trips.controller.ts, api/src/controllers/driverRoutes.controller.ts]
+    documentation: [.senda/domains/coverage.md]
+    tests: []
+  account_access:
+    labels: [cuenta, iniciar sesión, teléfono, Google, Apple, perfil]
+    code_areas: [api/src/controllers/auth.controller.ts, frontmobile/app/auth, frontmobile/app/onboarding.tsx]
+    documentation: [.senda/domains/account-access.md]
+    tests: []
+  trust_profiles:
+    labels: [perfil público, reputación, reseñas, identidad verificada, privacidad]
+    code_areas: [api/src/controllers/users.controller.ts, api/src/controllers/driverVerification.controller.ts, frontmobile/app/user]
+    documentation: [.senda/domains/trust-profiles.md]
+    tests: []
+  driver_operations:
+    labels: [conductor, vehículo, ruta, agenda, día no disponible]
+    code_areas: [api/src/controllers/drivers.controller.ts, api/src/controllers/vehicles.controller.ts, api/src/controllers/driverRoutes.controller.ts]
+    documentation: [.senda/domains/driver-operations.md]
+    tests: []
+  notifications:
+    labels: [notificaciones, avisos, alertas]
+    code_areas: [api/src/services/notifications.ts, api/src/services/routeAlerts.ts]
+    documentation: [.senda/domains/notifications.md]
+    tests: []
+  maps_locations:
+    labels: [mapa, ubicación, ciudades, dirección, ruta estimada]
+    code_areas: [api/src/controllers/maps.controller.ts, api/src/services/googleMaps.ts]
+    documentation: [.senda/domains/maps-locations.md]
+    tests: []
+  safety_support:
+    labels: [seguridad, soporte, reporte, ayuda]
+    code_areas: [frontmobile/app/(app)/safety.tsx, frontmobile/app/(app)/support.tsx]
+    documentation: [.senda/domains/safety-support.md]
+    tests: []

@@ -20,6 +20,7 @@ export type User = {
   name: string
   email?: string | null
   phone?: string | null
+  avatarUrl?: string | null
   city?: string
   rating: number
   ratingCount: number
@@ -144,6 +145,7 @@ function normalizeUser(user: Partial<User> & { id: string; name: string }): User
     name: user.name,
     email: user.email ?? null,
     phone: user.phone ?? null,
+    avatarUrl: user.avatarUrl ?? null,
     city: user.city,
     rating: typeof user.rating === 'number' ? user.rating : 0,
     ratingCount: typeof user.ratingCount === 'number' ? user.ratingCount : 0,

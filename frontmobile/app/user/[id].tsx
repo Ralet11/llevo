@@ -26,7 +26,7 @@ type PublicProfile = {
   createdAt: string
   isIdentityVerified: boolean
   isPhoneVerified: boolean
-  stats: { deliveries: number; shipments: number }
+  stats: { deliveries: number; shipments: number; ridesAsPassenger: number; ridesAsDriver: number }
   reviews: Review[]
 }
 
@@ -100,7 +100,7 @@ export default function UserProfileScreen() {
         <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
           {/* ── Identidad ── */}
           <View style={s.identityCard}>
-            <Avatar initials={initialsOf(profile.name)} size={72} />
+            <Avatar initials={initialsOf(profile.name)} imageUrl={profile.avatarUrl} size={76} />
             <Text style={s.name}>{profile.name}</Text>
 
             {(profile.isIdentityVerified || profile.isPhoneVerified) ? (
@@ -131,6 +131,11 @@ export default function UserProfileScreen() {
 
           {/* ── Stats ── */}
           <View style={s.statsRow}>
+            <Text style={s.sectionTitle}>Actividad en LLEVO</Text>
+            <Stat icon="car-sport-outline" value={String(profile.stats.ridesAsDriver)} label="Viajes llevando" />
+            <View style={s.statDivider} />
+            <Stat icon="navigate-outline" value={String(profile.stats.ridesAsPassenger)} label="Viajes realizados" />
+            <View style={s.statDivider} />
             <Stat icon="cube" value={String(profile.stats.deliveries)} label="Entregas" />
             <View style={s.statDivider} />
             <Stat icon="send" value={String(profile.stats.shipments)} label="Envíos" />
@@ -215,18 +220,18 @@ const s = StyleSheet.create({
 
   // Stats
   statsRow: {
-    flexDirection: 'row', alignItems: 'center',
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', rowGap: 18,
     paddingVertical: 16, paddingHorizontal: 12, borderRadius: 18,
     backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.border,
   },
-  stat: { flex: 1, alignItems: 'center', gap: 4 },
+  stat: { width: '33.333%', alignItems: 'center', gap: 4 },
   statValue: { color: Theme.colors.text, fontFamily: Theme.fonts.bold, fontSize: 17 },
   statValueSmall: { fontSize: 12, textTransform: 'capitalize', marginTop: 2 },
   statLabel: {
     color: Theme.colors.textSubtle, fontFamily: Theme.fonts.medium,
     fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4,
   },
-  statDivider: { width: 1, height: 34, backgroundColor: Theme.colors.border },
+  statDivider: { display: 'none' },
 
   // Reseñas
   section: { gap: 12 },

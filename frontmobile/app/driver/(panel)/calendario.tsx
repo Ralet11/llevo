@@ -30,20 +30,13 @@ export default function DriverCalendarioScreen() {
   const [daysOff, setDaysOff] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
 
-  useFocusEffect(
-    useCallback(() => {
-      void fetchCounts(month)
-      void fetchDaysOff()
-    }, [token, month])
-  )
-
-  async function fetchDaysOff() {
+  const fetchDaysOff = useCallback(async () => {
     if (!token) return
     try {
       const data = await api.get<{ dates: string[] }>('/drivers/days-off', token)
       setDaysOff(new Set(data.dates))
     } catch {}
-  }
+  }, [token])
 
   // Marca/desmarca un día como no disponible: los viajes INTERCITY programados
   // dejan de ofrecerse ese día (la demanda LOCAL no se ve afectada).
@@ -71,7 +64,7 @@ export default function DriverCalendarioScreen() {
     }
   }
 
-  async function fetchCounts(forMonth: Date) {
+  const fetchCounts = useCallback(async (forMonth: Date) => {
     if (!token) return
     setLoading(true)
     try {
@@ -92,7 +85,14 @@ export default function DriverCalendarioScreen() {
     } catch {} finally {
       setLoading(false)
     }
-  }
+  }, [token])
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchCounts(month)
+      void fetchDaysOff()
+    }, [fetchCounts, fetchDaysOff, month])
+  )
 
   function handleSelectDay(d: Date) {
     router.push({ pathname: '/driver/day/[date]', params: { date: dayKey(d) } })

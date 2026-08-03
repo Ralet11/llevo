@@ -22,7 +22,7 @@ export type MyShipment = {
   status: ShipmentStatus
   preferredDate: string | null
   createdAt: string
-  job: { driver: MyShipmentDriver } | null
+  job: { id: string; driver: MyShipmentDriver; quotedTotal: number; baseFee: number; distanceFee: number; timeFee: number; weightFee: number; sizeSurcharge: number; platformFee: number; payment: { status: 'PENDING' | 'IN_ESCROW' | 'RELEASED' | 'REFUNDED' | 'FAILED'; amount: number } | null } | null
 }
 
 const ACTIVE_STATUSES: ShipmentStatus[] = ['SEARCHING', 'ASSIGNED', 'PICKED_UP']
@@ -37,6 +37,10 @@ export function fetchShipment(token: string, shipmentId: string) {
 
 export function cancelShipment(token: string, shipmentId: string) {
   return api.post<{ ok: boolean }>(`/shipments/${shipmentId}/cancel`, {}, token)
+}
+
+export function createShipmentCheckout(token: string, shipmentJobId: string) {
+  return api.post<{ checkoutUrl: string; paymentId: string }>(`/payments/shipment-jobs/${shipmentJobId}/checkout`, {}, token)
 }
 
 export function isActiveShipmentStatus(status: ShipmentStatus) {

@@ -4,6 +4,7 @@ import prisma from '../lib/prisma'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
 import { buildBypassedDriverVerificationUpdate, isDriverVerificationBypassed } from '../services/didit'
+import { notifyRouteAlertsForNewRoute } from '../services/routeAlerts'
 
 type RouteParams = { id: string }
 
@@ -168,6 +169,7 @@ export async function createDriverRoute(req: AuthRequest, res: Response, next: N
     const route = await prisma.driverRoute.create({
       data: { ...toRouteColumns(data), driverId: req.userId! },
     })
+    notifyRouteAlertsForNewRoute(route).catch(err => console.error('[route-alert] notify_failed', err))
     res.status(201).json({ route })
   } catch (err) {
     next(err)

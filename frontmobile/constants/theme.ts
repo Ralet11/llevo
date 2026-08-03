@@ -170,7 +170,9 @@ export const palettes: Record<PaletteName, Palette> = {
 }
 
 export const Theme = {
-  colors: { ...baseColors },
+  // Fuente inicial de los estilos legacy que se crean al importar un módulo.
+  // Debe coincidir con la paleta por defecto del ThemeProvider.
+  colors: { ...palettes['electric-blue'].colors },
   fonts: {
     display: 'SpaceGrotesk_700Bold',
     body: 'Manrope_400Regular',

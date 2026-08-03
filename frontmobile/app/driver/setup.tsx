@@ -542,7 +542,7 @@ export default function DriverSetupScreen() {
                 : <View style={styles.modeRadio} />}
             </TouchableOpacity>
 
-            <Text style={styles.modeHint}>Después podés sumar el otro tipo desde "Mis rutas".</Text>
+            <Text style={styles.modeHint}>{'Después podés sumar el otro tipo desde "Mis rutas".'}</Text>
           </View>
         ) : null}
 

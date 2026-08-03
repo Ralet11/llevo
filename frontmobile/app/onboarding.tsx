@@ -4,11 +4,12 @@ import * as Google from 'expo-auth-session/providers/google'
 import { router } from 'expo-router'
 import * as WebBrowser from 'expo-web-browser'
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { ActivityIndicator, Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../components/app/ScreenSafeArea'
 import { Button } from '../components/ui/Button'
 import { Theme } from '../constants/theme'
 import { useAuth } from '../lib/auth'
+import { themedStyles } from '../lib/theme'
 
 // Necesario para que el popup de OAuth cierre y devuelva el resultado.
 WebBrowser.maybeCompleteAuthSession()
@@ -46,7 +47,8 @@ export default function OnboardingScreen() {
       </View>
 
       <View style={styles.hero}>
-        <View style={styles.shield}>
+        <Image source={require('../assets/onboarding-journey-transparent-v2.png')} style={styles.heroImage} resizeMode="contain" />
+        {false && (<View style={styles.shield}>
           <View style={styles.heroGlow} />
 
           <View style={styles.routeBadge}>
@@ -111,7 +113,7 @@ export default function OnboardingScreen() {
           <View style={styles.tripCheck}>
             <Ionicons name="checkmark" size={22} color={Theme.colors.black} />
           </View>
-        </View>
+        </View>)}
       </View>
 
       <View style={styles.copy}>
@@ -241,7 +243,7 @@ function AppleSignInButton({
   )
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyles(() => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Theme.colors.background,
@@ -275,6 +277,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 260,
   },
+  heroImage: { width: 290, height: 290 },
   shield: {
     width: 270,
     height: 240,
@@ -532,4 +535,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
   },
-})
+}))

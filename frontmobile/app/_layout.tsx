@@ -1,7 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
-import { View, ActivityIndicator, Platform } from 'react-native'
+import { View, ActivityIndicator, Image, Platform } from 'react-native'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFonts } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
@@ -117,6 +117,7 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
+  const [showBrandSplash, setShowBrandSplash] = useState(true)
   const [fontsLoaded] = useFonts({
     Manrope_400Regular,
     Manrope_500Medium,
@@ -127,15 +128,30 @@ export default function RootLayout() {
   })
 
   useEffect(() => {
-    if (fontsLoaded) {
-      SplashScreen.hideAsync()
-    }
+    if (!fontsLoaded) return
+    void SplashScreen.hideAsync()
+    // Splash de marca visible el tiempo suficiente para que se perciba incluso
+    // en aperturas rápidas, después del splash nativo de Android.
+    const timer = setTimeout(() => setShowBrandSplash(false), 3000)
+    return () => clearTimeout(timer)
   }, [fontsLoaded])
 
   if (!fontsLoaded) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.background }}>
         <ActivityIndicator color={Theme.colors.lime} size="large" />
+      </View>
+    )
+  }
+
+  if (showBrandSplash) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#06101F' }}>
+        <Image
+          source={require('../assets/splash-llevo.png')}
+          resizeMode="cover"
+          style={{ width: '100%', height: '100%' }}
+        />
       </View>
     )
   }

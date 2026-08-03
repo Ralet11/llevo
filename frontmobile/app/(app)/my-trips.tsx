@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
+import * as WebBrowser from 'expo-web-browser'
 import { router, useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
@@ -9,7 +10,7 @@ import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 import { useTheme } from '../../lib/theme'
 import { getSocket } from '../../lib/socket'
-import { cancelBooking, fetchMyBookings, type MyBooking, type RideBookingStatus } from '../../lib/trips'
+import { cancelBooking, cancelTravelRequest, createRideCheckout, fetchMyBookings, type MyBooking, type RideBookingStatus, type TravelRequest, type TravelRequestStatus } from '../../lib/trips'
 
 function initialsOf(name: string) {
   return name.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('')
@@ -34,14 +35,26 @@ export default function MyTripsScreen() {
     PAID: { label: 'Confirmado', color: colors.success },
     CANCELLED: { label: 'Cancelado', color: colors.textMuted },
   }
+  const requestStatusMeta: Record<TravelRequestStatus, { label: string; color: string }> = {
+    SEARCHING: { label: 'Estamos buscando tu viaje', color: colors.warning },
+    PUBLISHED: { label: 'Viaje publicado', color: colors.lime },
+    MATCHED: { label: 'Conductor encontrado', color: colors.lime },
+    CONFIRMED: { label: 'Viaje confirmado', color: colors.success },
+    COMPLETED: { label: 'Completado', color: colors.textMuted },
+    CANCELLED: { label: 'Cancelado', color: colors.textMuted },
+    EXPIRED: { label: 'Vencido', color: colors.danger },
+  }
   const [bookings, setBookings] = useState<MyBooking[]>([])
+  const [travelRequests, setTravelRequests] = useState<TravelRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!token) return
     try {
-      setBookings(await fetchMyBookings(token))
+      const [nextBookings, nextRequests] = await Promise.all([fetchMyBookings(token), Promise.resolve([] as TravelRequest[])])
+      setBookings(nextBookings)
+      setTravelRequests(nextRequests)
     } catch {} finally {
       setLoading(false)
     }
@@ -55,7 +68,11 @@ export default function MyTripsScreen() {
     if (!socket) return
     const onChange = () => void load()
     socket.on('ride:status_changed', onChange)
-    return () => { socket.off('ride:status_changed', onChange) }
+    socket.on('travel-request:status_changed', onChange)
+    return () => {
+      socket.off('ride:status_changed', onChange)
+      socket.off('travel-request:status_changed', onChange)
+    }
   }, [load])
 
   function confirmCancel(b: MyBooking) {
@@ -78,8 +95,45 @@ export default function MyTripsScreen() {
     }
   }
 
-  function handlePay(b: MyBooking) {
+  function confirmCancelTravelRequest(request: TravelRequest) {
+    Alert.alert('Cancelar búsqueda', `¿Cancelar el viaje ${request.originCity} → ${request.destinationCity}?`, [
+      { text: 'No', style: 'cancel' },
+      { text: 'Sí, cancelar', style: 'destructive', onPress: () => void handleCancelTravelRequest(request.id) },
+    ])
+  }
+
+  async function handleCancelTravelRequest(id: string) {
+    if (!token) return
+    setBusyId(id)
+    try {
+      await cancelTravelRequest(token, id)
+      await load()
+    } catch (err) {
+      Alert.alert('No se pudo cancelar', err instanceof Error ? err.message : 'Intentá de nuevo.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  function showPaymentUnavailable(b: MyBooking) {
     Alert.alert('Pagar tu lugar', `Muy pronto vas a poder pagar por MercadoPago tu lugar en ${b.originCity} → ${b.destinationCity}.`, [{ text: 'Entendido' }])
+  }
+
+  async function handlePay(b: MyBooking) {
+    if (!token) {
+      showPaymentUnavailable(b)
+      return
+    }
+    setBusyId(b.id)
+    try {
+      const { checkoutUrl } = await createRideCheckout(token, b.id)
+      await WebBrowser.openBrowserAsync(checkoutUrl)
+      await load()
+    } catch (err) {
+      Alert.alert('No se pudo iniciar el pago', err instanceof Error ? err.message : 'Intentá de nuevo.')
+    } finally {
+      setBusyId(null)
+    }
   }
 
   return (
@@ -92,11 +146,11 @@ export default function MyTripsScreen() {
         </View>
       </View>
 
-      {loading && bookings.length === 0 ? (
+      {loading && bookings.length === 0 && travelRequests.length === 0 ? (
         <View style={s.center}><ActivityIndicator color={colors.lime} /></View>
       ) : (
         <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-          {bookings.length === 0 ? (
+          {bookings.length === 0 && travelRequests.length === 0 ? (
             <View style={s.empty}>
               <View style={s.emptyIcon}><Ionicons name="car-outline" size={26} color={colors.lime} /></View>
               <Text style={s.emptyTitle}>Todavía no pediste sumarte a un viaje</Text>
@@ -106,7 +160,28 @@ export default function MyTripsScreen() {
               </TouchableOpacity>
             </View>
           ) : (
-            bookings.map(b => {
+            <>
+              {travelRequests.map(request => {
+                const meta = requestStatusMeta[request.status]
+                const cancellable = request.status === 'SEARCHING' || request.status === 'PUBLISHED' || request.status === 'MATCHED'
+                return (
+                  <View key={request.id} style={s.card}>
+                    <View style={s.cardTop}>
+                      <View style={[s.statusDot, { backgroundColor: meta.color }]} />
+                      <Text style={[s.statusLabel, { color: meta.color }]}>{meta.label}</Text>
+                    </View>
+                    <Text style={s.route}>{request.originCity} → {request.destinationCity}</Text>
+                    <Text style={s.date}>{formatDate(request.date)}</Text>
+                    <Text style={s.requestHint}>{request.status === 'PUBLISHED' ? 'Tu viaje está visible para conductores compatibles.' : 'Te avisamos apenas un conductor responda.'}</Text>
+                    {cancellable ? (
+                      <TouchableOpacity style={s.cancelBtn} activeOpacity={0.7} onPress={() => confirmCancelTravelRequest(request)} disabled={busyId === request.id}>
+                        {busyId === request.id ? <ActivityIndicator size="small" color={colors.danger} /> : <Text style={s.cancelBtnText}>Cancelar búsqueda</Text>}
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                )
+              })}
+              {bookings.map(b => {
               const meta = statusMeta[b.status]
               return (
                 <View key={b.id} style={s.card}>
@@ -135,9 +210,9 @@ export default function MyTripsScreen() {
                   </TouchableOpacity>
 
                   {b.status === 'APPROVED' ? (
-                    <TouchableOpacity style={s.payBtn} activeOpacity={0.85} onPress={() => handlePay(b)}>
-                      <Ionicons name="card-outline" size={18} color={colors.black} />
-                      <Text style={s.payBtnText}>Pagar mi lugar</Text>
+                    <TouchableOpacity style={[s.payBtn, busyId === b.id && { opacity: 0.65 }]} activeOpacity={0.85} onPress={() => void handlePay(b)} disabled={busyId === b.id}>
+                      {busyId === b.id ? <ActivityIndicator size="small" color={colors.black} /> : <Ionicons name="card-outline" size={18} color={colors.black} />}
+                      <Text style={s.payBtnText}>{busyId === b.id ? 'Abriendo pago...' : 'Pagar mi lugar'}</Text>
                     </TouchableOpacity>
                   ) : null}
 
@@ -150,7 +225,8 @@ export default function MyTripsScreen() {
                   ) : null}
                 </View>
               )
-            })
+              })}
+            </>
           )}
         </ScrollView>
       )}
@@ -181,6 +257,7 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   price: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16 },
   route: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 20, lineHeight: 24 },
   date: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13, textTransform: 'capitalize' },
+  requestHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 18 },
   driverRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderTopWidth: 1, borderColor: colors.border },
   driverName: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 14 },
   driverMeta: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, marginTop: 2 },

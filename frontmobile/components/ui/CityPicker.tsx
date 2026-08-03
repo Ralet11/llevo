@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
@@ -23,6 +23,12 @@ type Props = {
 
 export function CityPicker({ label, value, onChangeCity, placeholder, icon }: Props) {
   const [query, setQuery] = useState(value)
+
+  // The picker can stay mounted while its parent receives new route params
+  // (for example, when opening a saved route alert from Home).
+  useEffect(() => {
+    setQuery(value)
+  }, [value])
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)

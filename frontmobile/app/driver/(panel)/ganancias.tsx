@@ -31,13 +31,7 @@ export default function DriverGananciasScreen() {
   const [stats, setStats] = useState<DriverStats | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useFocusEffect(
-    useCallback(() => {
-      void fetchStats()
-    }, [token])
-  )
-
-  async function fetchStats() {
+  const fetchStats = useCallback(async () => {
     if (!token) return
     setLoading(true)
     try {
@@ -46,7 +40,13 @@ export default function DriverGananciasScreen() {
     } catch {} finally {
       setLoading(false)
     }
-  }
+  }, [token])
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchStats()
+    }, [fetchStats])
+  )
 
   return (
     <ScreenSafeArea style={styles.container}>

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
-import { router } from 'expo-router'
-import { useState } from 'react'
+import { router, useLocalSearchParams } from 'expo-router'
+import { useEffect, useState } from 'react'
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { Avatar } from '../../components/ui/Avatar'
@@ -10,7 +10,8 @@ import { IconButton } from '../../components/ui/IconButton'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 import { useTheme } from '../../lib/theme'
-import { createBooking, searchTrips, type TripOption, type TripSearchResult } from '../../lib/trips'
+import { ApiError } from '../../lib/api'
+import { createBooking, createRouteAlert, searchTrips, type TravelRequest, type TripOption, type TripSearchResult } from '../../lib/trips'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 const WEEKDAY_LABELS = ['L', 'M', 'M', 'J', 'V', 'S', 'D']
@@ -25,6 +26,12 @@ function startOfDay(d: Date) {
 
 function sameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+}
+
+function dateFromRouteParam(value?: string | string[]) {
+  const raw = Array.isArray(value) ? value[0] : value
+  const match = raw ? /^(\d{4})-(\d{2})-(\d{2})/.exec(raw) : null
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : startOfDay(new Date())
 }
 
 // ─── Calendario del mes (selección de fecha del viaje) ────────────────────────
@@ -115,20 +122,31 @@ function MonthCalendar({ selected, onSelect }: { selected: Date; onSelect: (d: D
 
 export default function TravelScreen() {
   const { token } = useAuth()
+  const routeParams = useLocalSearchParams<{ origin?: string; destination?: string; date?: string }>()
   const { palette } = useTheme()
   const colors = palette.colors
   const s = createStyles(colors)
 
-  const [originCity, setOriginCity] = useState('')
-  const [destinationCity, setDestinationCity] = useState('')
-  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()))
+  const [originCity, setOriginCity] = useState(() => routeParams.origin ?? '')
+  const [destinationCity, setDestinationCity] = useState(() => routeParams.destination ?? '')
+  const [selectedDate, setSelectedDate] = useState<Date>(() => dateFromRouteParam(routeParams.date))
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<TripSearchResult | null>(null)
+  const [formResult] = useState<TripSearchResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [requestingId, setRequestingId] = useState<string | null>(null)
+  const [alertBusy, setAlertBusy] = useState(false)
+  const [alertCreated, setAlertCreated] = useState(false)
   const [swapKey, setSwapKey] = useState(0)
+  const [travelRequest] = useState<TravelRequest | null>(null)
 
   const canSearch = originCity.trim().length > 0 && destinationCity.trim().length > 0
+
+  useEffect(() => {
+    if (routeParams.origin) setOriginCity(routeParams.origin)
+    if (routeParams.destination) setDestinationCity(routeParams.destination)
+    if (routeParams.date) setSelectedDate(dateFromRouteParam(routeParams.date))
+  }, [routeParams.origin, routeParams.destination, routeParams.date])
 
   function swapCities() {
     setOriginCity(destinationCity)
@@ -141,11 +159,16 @@ export default function TravelScreen() {
     setError(null)
     setLoading(true)
     setResult(null)
+    setAlertCreated(false)
     try {
       const dateISO = new Date(
         selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 12, 0, 0,
       ).toISOString()
-      const data = await searchTrips(token, { originCity: originCity.trim(), destinationCity: destinationCity.trim(), dateISO })
+      const data = await searchTrips(token, {
+        originCity: originCity.trim(),
+        destinationCity: destinationCity.trim(),
+        dateISO,
+      })
       setResult(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo buscar. Intentá de nuevo.')
@@ -179,11 +202,104 @@ export default function TravelScreen() {
     }
   }
 
+  async function handleCreateRouteAlert() {
+    if (!token) return
+    setAlertBusy(true)
+    try {
+      const dateISO = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 12, 0, 0).toISOString()
+      await createRouteAlert(token, { originCity: originCity.trim(), destinationCity: destinationCity.trim(), dateISO })
+      setAlertCreated(true)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        Alert.alert('Actualización pendiente', 'La versión pública del servidor todavía no tiene activadas las alertas de ruta. Actualizá el backend y volvé a intentarlo.')
+      } else {
+        Alert.alert('No se pudo activar el aviso', err instanceof Error ? err.message : 'Intentá de nuevo.')
+      }
+    } finally {
+      setAlertBusy(false)
+    }
+  }
+
   const dateLabel = sameDay(selectedDate, startOfDay(new Date()))
     ? 'Hoy'
     : sameDay(selectedDate, new Date(Date.now() + 86400000))
       ? 'Mañana'
       : selectedDate.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })
+  // El formulario inicial entra completo en pantalla; los resultados y errores
+  // sí pueden sumar contenido y necesitan desplazamiento.
+  const hasScrollableContent = result !== null || error !== null
+
+  if (result) {
+    const noOptions = result.sameCity || result.options.length === 0
+    return (
+      <ScreenSafeArea style={s.container}>
+        <View style={s.header}>
+          <IconButton name="chevron-back" onPress={() => setResult(null)} />
+          <View style={s.headerCopy}>
+            <Text style={s.headerLabel}>Modo usuario</Text>
+            <Text style={s.headerTitle}>Viajes disponibles</Text>
+          </View>
+          <TouchableOpacity style={s.myTripsBtn} activeOpacity={0.8} onPress={() => router.push('/(app)/my-trips')}>
+            <Text style={s.myTripsBtnText}>Mis viajes</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView contentContainerStyle={s.resultsScreen} showsVerticalScrollIndicator={false}>
+          <View style={s.resultSearchSummary}>
+            <Text style={s.resultSearchRoute}>{originCity} → {destinationCity}</Text>
+            <Text style={s.resultSearchDate}>{dateLabel}</Text>
+          </View>
+          {noOptions ? (
+            <View style={s.emptyResult}>
+              <View style={s.emptyResultIcon}><Ionicons name="car-outline" size={30} color={colors.lime} /></View>
+              <Text style={s.emptyResultTitle}>{result.sameCity ? 'Elegí dos ciudades distintas' : 'No hay viajes disponibles'}</Text>
+              <Text style={s.emptyResultText}>{result.sameCity ? 'Por ahora podés buscar viajes entre ciudades distintas.' : 'No encontramos viajes que cubran esta ruta en esa fecha. Probá con otro día o un tramo de la misma ruta.'}</Text>
+              {!result.sameCity ? (
+                alertCreated ? (
+                  <View style={s.alertEnabled}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={s.alertEnabledText}>Te vamos a avisar si se publica un viaje para esta ruta.</Text></View>
+                ) : (
+                  <Button label="Avisarme si se publica un viaje" onPress={() => void handleCreateRouteAlert()} loading={alertBusy} style={s.emptyResultButton} />
+                )
+              ) : null}
+              <TouchableOpacity style={s.editSearchLink} onPress={() => setResult(null)}><Text style={s.editSearchLinkText}>Modificar búsqueda</Text></TouchableOpacity>
+            </View>
+          ) : (
+            <View style={s.results}>
+              <Text style={s.resultsTitle}>{result.options.length} viaje{result.options.length > 1 ? 's' : ''} disponible{result.options.length > 1 ? 's' : ''}</Text>
+              {result.options.map(o => (
+                <TripCard key={o.routeId} option={o} requesting={requestingId === o.routeId} onRequest={() => void handleRequestSeat(o)} />
+              ))}
+              <TouchableOpacity style={s.editSearchLink} onPress={() => setResult(null)}><Text style={s.editSearchLinkText}>Modificar búsqueda</Text></TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+      </ScreenSafeArea>
+    )
+  }
+
+  if (travelRequest) {
+    return (
+      <ScreenSafeArea style={s.container}>
+        <View style={s.header}>
+          <IconButton name="chevron-back" onPress={() => router.back()} />
+          <View style={s.headerCopy}>
+            <Text style={s.headerLabel}>Modo usuario</Text>
+            <Text style={s.headerTitle}>Quiero viajar</Text>
+          </View>
+        </View>
+        <View style={s.searchingState}>
+          <View style={s.searchingIcon}><Ionicons name="search" size={34} color={colors.lime} /></View>
+          <Text style={s.searchingTitle}>Estamos buscando un viaje para vos</Text>
+          <Text style={s.searchingText}>{travelRequest.originCity} → {travelRequest.destinationCity}</Text>
+          <Text style={s.searchingDate}>{new Date(`${travelRequest.date}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+          <Text style={s.searchingHint}>Avisamos a conductores que recorren este trayecto. Te notificamos apenas haya novedades.</Text>
+          <Button label="Ver mis viajes" onPress={() => router.replace('/(app)/my-trips')} style={s.searchingBtn} />
+          <TouchableOpacity activeOpacity={0.8} onPress={() => router.replace('/(app)')}>
+            <Text style={s.searchingHome}>Volver al inicio</Text>
+          </TouchableOpacity>
+        </View>
+      </ScreenSafeArea>
+    )
+  }
 
   return (
     <ScreenSafeArea style={s.container}>
@@ -199,7 +315,12 @@ export default function TravelScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={s.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        scrollEnabled={hasScrollableContent}
+      >
         {/* Origen → destino */}
         <View style={s.fieldsRow}>
           <View style={s.fieldsCol}>
@@ -233,21 +354,21 @@ export default function TravelScreen() {
         {/* Resultados */}
         {loading ? (
           <View style={s.centerState}><ActivityIndicator color={colors.lime} /></View>
-        ) : result ? (
-          result.sameCity ? (
+        ) : formResult ? (
+          formResult.sameCity ? (
             <View style={s.info}>
               <Ionicons name="information-circle-outline" size={20} color={colors.textMuted} />
               <Text style={s.infoText}>Por ahora los viajes son entre ciudades distintas. Muy pronto sumamos viajes dentro de la misma ciudad.</Text>
             </View>
-          ) : result.options.length === 0 ? (
+          ) : formResult.options.length === 0 ? (
             <View style={s.info}>
               <Ionicons name="car-outline" size={20} color={colors.textMuted} />
               <Text style={s.infoText}>No hay socios con lugar en ese recorrido ese día. Probá otra fecha.</Text>
             </View>
           ) : (
             <View style={s.results}>
-              <Text style={s.resultsTitle}>{result.options.length} viaje{result.options.length > 1 ? 's' : ''} disponible{result.options.length > 1 ? 's' : ''}</Text>
-              {result.options.map(o => (
+              <Text style={s.resultsTitle}>{formResult.options.length} viaje{formResult.options.length > 1 ? 's' : ''} disponible{formResult.options.length > 1 ? 's' : ''}</Text>
+              {formResult.options.map(o => (
                 <TripCard key={o.routeId} option={o} requesting={requestingId === o.routeId} onRequest={() => void handleRequestSeat(o)} />
               ))}
             </View>
@@ -326,7 +447,20 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   headerTitle: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16, marginTop: 2 },
   myTripsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
   myTripsBtnText: { color: colors.lime, fontFamily: Theme.fonts.semiBold, fontSize: 12 },
-  content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40, gap: 16 },
+  content: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10, gap: 12 },
+  resultsScreen: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 32, gap: 16 },
+  resultSearchSummary: { padding: 16, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  resultSearchRoute: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 21 },
+  resultSearchDate: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13, textTransform: 'capitalize', marginTop: 5 },
+  emptyResult: { flex: 1, minHeight: 330, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20, gap: 10 },
+  emptyResultIcon: { width: 68, height: 68, borderRadius: 34, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceElevated, borderWidth: 1, borderColor: colors.border, marginBottom: 5 },
+  emptyResultTitle: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 23, textAlign: 'center' },
+  emptyResultText: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  emptyResultButton: { alignSelf: 'stretch', marginTop: 10 },
+  alertEnabled: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 8, padding: 14, borderRadius: 14, marginTop: 10, backgroundColor: colors.surfaceElevated, borderWidth: 1, borderColor: colors.success },
+  alertEnabledText: { flex: 1, color: colors.success, fontFamily: Theme.fonts.semiBold, fontSize: 13, lineHeight: 18 },
+  editSearchLink: { alignSelf: 'center', paddingVertical: 12 },
+  editSearchLinkText: { color: colors.lime, fontFamily: Theme.fonts.semiBold, fontSize: 14 },
 
   fieldsRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   fieldsCol: { flex: 1 },
@@ -358,6 +492,15 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, backgroundColor: colors.dangerSurface },
   errorText: { flex: 1, color: colors.text, fontFamily: Theme.fonts.medium, fontSize: 12 },
   searchBtn: { marginTop: 2 },
+
+  searchingState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 12 },
+  searchingIcon: { width: 82, height: 82, borderRadius: 41, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceElevated, borderWidth: 1, borderColor: colors.border, marginBottom: 8 },
+  searchingTitle: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 25, lineHeight: 31, textAlign: 'center' },
+  searchingText: { color: colors.lime, fontFamily: Theme.fonts.bold, fontSize: 16, textAlign: 'center' },
+  searchingDate: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 14, textTransform: 'capitalize', textAlign: 'center' },
+  searchingHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13, lineHeight: 20, textAlign: 'center', marginTop: 8 },
+  searchingBtn: { marginTop: 14 },
+  searchingHome: { color: colors.lime, fontFamily: Theme.fonts.semiBold, fontSize: 14, paddingVertical: 8 },
 
   centerState: { minHeight: 100, alignItems: 'center', justifyContent: 'center' },
   info: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', padding: 16, borderRadius: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },

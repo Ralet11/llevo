@@ -1,0 +1,42 @@
+version: 1
+cases:
+  - question: "¿Cómo se cobran los viajes?"
+    domain: ride_payments
+    must_include: ["Una reserva aprobada y con precio puede pagarse mediante checkout de Mercado Pago.", "La reserva se marca pagada tras la confirmación del proveedor."]
+    must_not_claim: [pago en efectivo, tarifa dinámica, liquidación semanal, fee de cancelación, reembolso automático]
+  - question: "¿Puedo reservar si no hay viajes?"
+    domain: trips
+    must_include: ["Podés activar un seguimiento de ruta para recibir un aviso si aparece una opción compatible."]
+    must_not_claim: ["El seguimiento reserva un asiento.", "El seguimiento obliga a un conductor."]
+  - question: "¿Cómo se cotiza un envío?"
+    domain: shipments
+    must_include: ["La cotización considera distancia, tiempo estimado, peso y tamaño del paquete."]
+    must_not_claim: ["El precio depende solo del peso.", "Existe cobertura garantizada en todo el país."]
+  - question: "¿Cómo gana dinero un conductor?"
+    domain: driver_earnings
+    must_include: ["Puede definir un precio por asiento en rutas de pasajeros."]
+    must_not_claim: [liquidación automática, plazo de acreditación confirmado, comisión de viajes confirmada]
+  - question: "¿Qué pasa si cancelo?"
+    domain: cancellations
+    must_include: ["La posibilidad de cancelar depende del estado del flujo."]
+    must_not_claim: [reembolso automático, cargo de cancelación confirmado]
+  - question: "¿Qué datos ve otra persona en mi perfil?"
+    domain: trust_profiles
+    must_include: ["El perfil público puede mostrar reputación, reseñas y verificaciones.", "El teléfono y el email no se muestran en el perfil público."]
+    must_not_claim: ["La identidad verificada garantiza el comportamiento de una persona.", "El perfil público muestra datos de contacto."]
+  - question: "¿Qué necesito para ser conductor?"
+    domain: driver_operations
+    must_include: ["La cuenta necesita teléfono verificado y verificación de identidad para activar el modo conductor."]
+    must_not_claim: ["La aprobación es inmediata o garantizada."]
+  - question: "¿Las notificaciones están garantizadas?"
+    domain: notifications
+    must_include: ["Los avisos requieren que el dispositivo permita notificaciones."]
+    must_not_claim: ["Todas las notificaciones llegan siempre e inmediatamente."]
+  - question: "¿Puedo ver la ubicación en vivo?"
+    domain: maps_locations
+    must_include: ["Llevo usa mapas, lugares y estimaciones de recorrido."]
+    must_not_claim: ["Todos los viajes y envíos tienen seguimiento GPS en vivo."]
+  - question: "¿Hay asistencia de emergencia?"
+    domain: safety_support
+    must_include: ["La app cuenta con orientación de ayuda y seguridad."]
+    must_not_claim: ["Existe un centro de emergencias, seguro o tiempo de respuesta garantizado."]

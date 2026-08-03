@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store'
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react'
+import { View } from 'react-native'
 import { PaletteName, palettes, Theme, ThemeColors } from '../constants/theme'
 
 const THEME_STORAGE_KEY = 'llevo.palette'
@@ -35,7 +36,10 @@ export function themedStyles<T extends object>(factory: () => T): T {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [paletteName, setPaletteName] = useState<PaletteName>('lime-night')
+  // Arrancamos con la misma paleta que verá el usuario por defecto para evitar
+  // un destello de los colores históricos antes de restaurar su preferencia.
+  const [paletteName, setPaletteName] = useState<PaletteName>('electric-blue')
+  const [themeReady, setThemeReady] = useState(false)
   const palette = palettes[paletteName]
 
   applyPaletteColors(palette.colors)
@@ -46,12 +50,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (savedPalette && savedPalette in palettes) setPaletteName(savedPalette as PaletteName)
       })
       .catch(() => {})
+      .finally(() => setThemeReady(true))
   }, [])
 
   async function setPalette(name: PaletteName) {
     setPaletteName(name)
     await SecureStore.setItemAsync(THEME_STORAGE_KEY, name).catch(() => {})
   }
+
+  // No montamos las pantallas hasta restaurar la preferencia: de este modo no
+  // aparece por un instante una paleta distinta durante el arranque.
+  if (!themeReady) return <View style={{ flex: 1, backgroundColor: palettes['electric-blue'].colors.background }} />
 
   return (
     <ThemeContext.Provider value={{ palette, paletteName, setPalette }}>

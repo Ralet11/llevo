@@ -1,13 +1,14 @@
 import { Ionicons } from '@expo/vector-icons'
+import * as WebBrowser from 'expo-web-browser'
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../components/app/ScreenSafeArea'
 import { IconButton } from '../../components/ui/IconButton'
 import { Badge } from '../../components/ui/Badge'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
-import { fetchShipment, type MyShipment } from '../../lib/shipments'
+import { createShipmentCheckout, fetchShipment, type MyShipment } from '../../lib/shipments'
 import { useTheme } from '../../lib/theme'
 
 const PACKAGE_SIZE_LABELS: Record<MyShipment['packageSize'], string> = {
@@ -26,6 +27,7 @@ export default function ShipmentDetailScreen() {
   const [shipment, setShipment] = useState<MyShipment | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [paying, setPaying] = useState(false)
 
   const load = useCallback(async () => {
     if (!token || !id) return
@@ -41,6 +43,20 @@ export default function ShipmentDetailScreen() {
   }, [id, token])
 
   useFocusEffect(useCallback(() => { void load() }, [load]))
+
+  async function handlePay() {
+    if (!token || !shipment?.job) return
+    setPaying(true)
+    try {
+      const { checkoutUrl } = await createShipmentCheckout(token, shipment.job.id)
+      await WebBrowser.openBrowserAsync(checkoutUrl)
+      await load()
+    } catch (err) {
+      Alert.alert('No se pudo iniciar el pago', err instanceof Error ? err.message : 'Intentá de nuevo.')
+    } finally {
+      setPaying(false)
+    }
+  }
 
   return (
     <ScreenSafeArea style={styles.container}>
@@ -94,6 +110,31 @@ export default function ShipmentDetailScreen() {
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           ) : null}
+
+          {shipment.status === 'ASSIGNED' && shipment.job && shipment.job.payment?.status !== 'IN_ESCROW' ? (
+            <View style={styles.paymentCard}>
+              <View style={styles.paymentCopy}>
+                <Text style={styles.paymentTitle}>Pagá el envío para confirmarlo</Text>
+                <Text style={styles.paymentText}>${(shipment.job.payment?.amount ?? shipment.job.quotedTotal).toLocaleString('es-AR')} · Incluye retiro, distancia, tiempo, paquete y servicio. El conductor recibe la confirmación cuando Mercado Pago aprueba el pago.</Text>
+              </View>
+              <View style={styles.priceBreakdown}>
+                <PriceRow label="Tarifa base" amount={shipment.job.baseFee} styles={styles} />
+                <PriceRow label="Distancia" amount={shipment.job.distanceFee} styles={styles} />
+                <PriceRow label="Tiempo estimado" amount={shipment.job.timeFee} styles={styles} />
+                <PriceRow label="Peso" amount={shipment.job.weightFee} styles={styles} />
+                {shipment.job.sizeSurcharge > 0 ? <PriceRow label="Tamaño del paquete" amount={shipment.job.sizeSurcharge} styles={styles} /> : null}
+                <PriceRow label="Servicio LLEVO" amount={shipment.job.platformFee} styles={styles} />
+              </View>
+              <TouchableOpacity style={[styles.payButton, paying && { opacity: 0.65 }]} onPress={() => void handlePay()} disabled={paying}>
+                {paying ? <ActivityIndicator size="small" color={colors.black} /> : <Ionicons name="card-outline" size={18} color={colors.black} />}
+                <Text style={styles.payButtonText}>{paying ? 'Abriendo pago...' : 'Pagar envío'}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {shipment.job?.payment?.status === 'IN_ESCROW' ? (
+            <View style={styles.paymentConfirmed}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.paymentConfirmedText}>Pago confirmado. Tu envío está cubierto.</Text></View>
+          ) : null}
         </ScrollView>
       )}
     </ScreenSafeArea>
@@ -106,6 +147,10 @@ function DetailCard({ title, icon, children, styles }: { title: string; icon: Re
 
 function DetailRow({ label, value, styles }: { label: string; value: string; styles: ReturnType<typeof createStyles> }) {
   return <View style={styles.row}><Text style={styles.rowLabel}>{label}</Text><Text style={styles.rowValue}>{value}</Text></View>
+}
+
+function PriceRow({ label, amount, styles }: { label: string; amount: number; styles: ReturnType<typeof createStyles> }) {
+  return <View style={styles.priceRow}><Text style={styles.priceRowLabel}>{label}</Text><Text style={styles.priceRowValue}>${amount.toLocaleString('es-AR')}</Text></View>
 }
 
 const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
@@ -135,4 +180,16 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   driverCopy: { flex: 1 },
   driverLabel: { color: colors.textSubtle, fontFamily: Theme.fonts.bold, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   driverName: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 14, marginTop: 3 },
+  paymentCard: { padding: 16, borderRadius: Theme.radius.lg, gap: 14, backgroundColor: colors.surfaceElevated, borderWidth: 1, borderColor: colors.lime },
+  paymentCopy: { gap: 4 },
+  paymentTitle: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 15 },
+  paymentText: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 18 },
+  priceBreakdown: { gap: 7, borderTopWidth: 1, borderColor: colors.border, paddingTop: 12 },
+  priceRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  priceRowLabel: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12 },
+  priceRowValue: { color: colors.text, fontFamily: Theme.fonts.semiBold, fontSize: 12 },
+  payButton: { minHeight: 46, borderRadius: Theme.radius.md, backgroundColor: colors.lime, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
+  payButtonText: { color: colors.black, fontFamily: Theme.fonts.bold, fontSize: 14 },
+  paymentConfirmed: { padding: 14, borderRadius: Theme.radius.md, backgroundColor: colors.surfaceElevated, borderWidth: 1, borderColor: colors.success, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  paymentConfirmedText: { color: colors.success, fontFamily: Theme.fonts.bold, fontSize: 13, flex: 1 },
 })

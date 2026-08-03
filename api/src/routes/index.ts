@@ -7,6 +7,7 @@ import driverRoutesRoutes from './driverRoutes.routes'
 import driverVerificationRoutes from './driverVerification.routes'
 import driversRoutes from './drivers.routes'
 import shipmentsRoutes from './shipments.routes'
+import paymentsRoutes from './payments.routes'
 
 const router = Router()
 
@@ -22,5 +23,6 @@ router.use('/drivers/routes', driverRoutesRoutes)
 router.use('/drivers/verification', driverVerificationRoutes)
 router.use('/drivers', driversRoutes)
 router.use('/shipments', shipmentsRoutes)
+router.use('/payments', paymentsRoutes)
 
 export default router

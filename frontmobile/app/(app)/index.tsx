@@ -5,7 +5,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
   Easing,
   Keyboard,
   KeyboardAvoidingView,
@@ -34,6 +33,7 @@ import { useAuth } from '../../lib/auth'
 import { useTheme } from '../../lib/theme'
 import { api, ApiError } from '../../lib/api'
 import { getSocket } from '../../lib/socket'
+import { fetchMyRouteAlerts, type RouteAlert } from '../../lib/trips'
 import { cancelShipment, fetchMyShipments, isActiveShipmentStatus, type MyShipment, type PackageSize } from '../../lib/shipments'
 import {
   autocompletePlaces,
@@ -80,6 +80,8 @@ type SearchResult = {
   destinationCity: string | null
   durationLabel: string
   distanceLabel: string
+  distanceMeters: number
+  durationSeconds: number
   routeCoordinates: LatLng[]
   originPoint: LatLng
   destinationPoint: LatLng
@@ -110,6 +112,16 @@ type AssignedDriver = {
   phone: string | null
   rating: number | null
   ratingCount: number
+}
+
+type ShipmentQuote = {
+  baseFee: number
+  distanceFee: number
+  timeFee: number
+  weightFee: number
+  sizeSurcharge: number
+  platformFee: number
+  total: number
 }
 
 const MAP_MARKERS = [
@@ -258,13 +270,6 @@ function formatDistance(distanceMeters: number) {
 
 function formatPrice(price: number) {
   return `ARS ${Math.round(price).toLocaleString('es-AR')}`
-}
-
-function formatCountdown(totalSeconds: number) {
-  const safeSeconds = Math.max(0, totalSeconds)
-  const minutes = Math.floor(safeSeconds / 60)
-  const seconds = safeSeconds % 60
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 function getDeliverySizeLabel(size: DeliveryPackageSize | null) {
@@ -495,6 +500,8 @@ function buildFallbackSearchResult(originQuery: string, destinationQuery: string
     destinationCity: null,
     durationLabel: formatDurationSeconds(durationSeconds),
     distanceLabel: formatDistance(distanceMeters),
+    distanceMeters,
+    durationSeconds,
     routeCoordinates,
     originPoint: origin.coordinate,
     destinationPoint: destination.coordinate,
@@ -516,6 +523,8 @@ function buildLiveSearchResult(route: RoutePreview): SearchResult {
     destinationCity: route.destination.city,
     durationLabel: formatDurationSeconds(route.durationSeconds),
     distanceLabel: formatDistance(route.distanceMeters),
+    distanceMeters: route.distanceMeters,
+    durationSeconds: route.durationSeconds,
     routeCoordinates: normalizedRoute,
     originPoint: route.origin.location,
     destinationPoint: route.destination.location,
@@ -594,7 +603,7 @@ export default function AppHomeScreen() {
   const [routeResult, setRouteResult] = useState<SearchResult | null>(null)
   const [autoAccept, setAutoAccept] = useState(false)
   const [selectedOfferId, setSelectedOfferId] = useState<RouteOfferId>('economico')
-  const [renderSearchComposer, setRenderSearchComposer] = useState(false)
+  const [, setRenderSearchComposer] = useState(false)
   const [renderResultsChrome, setRenderResultsChrome] = useState(false)
   const [originSelection, setOriginSelection] = useState<PlaceSuggestion | null>(null)
   const [destinationSelection, setDestinationSelection] = useState<PlaceSuggestion | null>(null)
@@ -605,17 +614,18 @@ export default function AppHomeScreen() {
   const [deliveryDraft, setDeliveryDraft] = useState<DeliveryDraft>(EMPTY_DELIVERY_DRAFT)
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [deliveryFormError, setDeliveryFormError] = useState<string | null>(null)
+  const [shipmentQuote, setShipmentQuote] = useState<ShipmentQuote | null>(null)
   const [deliveryWizardStep, setDeliveryWizardStep] = useState<DeliveryWizardStep>('route')
   const [deliveryRequestStatus, setDeliveryRequestStatus] = useState<DeliveryRequestStatus>('idle')
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null)
   const [currentShipmentId, setCurrentShipmentId] = useState<string | null>(null)
   const [searchSessionToken, setSearchSessionToken] = useState('')
   const [myShipments, setMyShipments] = useState<MyShipment[]>([])
+  const [routeAlerts, setRouteAlerts] = useState<RouteAlert[]>([])
   const searchProgress = useRef(new Animated.Value(0)).current
   const resultsProgress = useRef(new Animated.Value(0)).current
   const searchingPulse = useRef(new Animated.Value(0)).current
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const screenHeight = useRef(Dimensions.get('screen').height).current
 
   const currentLocationLabel = useMemo(() => {
     const trimmed = addressLabel.trim()
@@ -684,10 +694,18 @@ export default function AppHomeScreen() {
     }
   }, [token])
 
+  const loadRouteAlerts = useCallback(async () => {
+    if (!token) return
+    try {
+      setRouteAlerts(await fetchMyRouteAlerts(token))
+    } catch {}
+  }, [token])
+
   useFocusEffect(
     useCallback(() => {
       void loadShipments()
-    }, [loadShipments])
+      void loadRouteAlerts()
+    }, [loadShipments, loadRouteAlerts])
   )
 
   // Socket: mantiene "myShipments" al día en tiempo real (chip de envío activo,
@@ -700,11 +718,16 @@ export default function AppHomeScreen() {
     function handleAnyStatusChanged() {
       void loadShipments()
     }
+    function handleRouteAlert() {
+      void loadRouteAlerts()
+    }
     socket?.on('shipment:status_changed', handleAnyStatusChanged)
+    socket?.on('route-alert:available', handleRouteAlert)
     return () => {
       socket?.off('shipment:status_changed', handleAnyStatusChanged)
+      socket?.off('route-alert:available', handleRouteAlert)
     }
-  }, [token, loadShipments])
+  }, [token, loadShipments, loadRouteAlerts])
 
   useEffect(() => {
     if (searchStage === 'editing') {
@@ -855,10 +878,6 @@ export default function AppHomeScreen() {
     const latDelta = Math.abs(origin.latitude - destination.latitude)
     const lngDelta = Math.abs(origin.longitude - destination.longitude)
     const span = Math.max(latDelta, lngDelta)
-    // altitude ~= span * 111000 * 3.5 (rough meters above ground for iOS)
-    const altMid = Math.max(3000, Math.min(span * 111000 * 3.5, 14000))
-    const zoomMid = Math.max(11, Math.min(14 - Math.log2(span * 111), 14))
-
     // Pan between points keeping the same zoom level as the route view.
     // Using the same latitudeDelta avoids loading new tile zoom levels → no white flash.
     const routeDelta = Math.max(span * 1.6, 0.06)
@@ -1172,6 +1191,18 @@ export default function AppHomeScreen() {
     setDeliveryWizardStep(DELIVERY_WIZARD_STEPS[currentIndex - 1]?.id ?? 'route')
   }
 
+  function requestShipmentQuote() {
+    if (!token || !routeResult) return
+    const weightKg = parseFloat(deliveryDraft.estimatedWeight.trim().replace(',', '.'))
+    if (!Number.isFinite(weightKg) || !deliveryDraft.estimatedSize) return
+    void api.post<{ quote: ShipmentQuote }>('/shipments/quote', {
+      weightKg,
+      packageSize: deliveryDraft.estimatedSize.toUpperCase(),
+      estimatedDistanceKm: Math.max(0.5, routeResult.distanceMeters / 1000),
+      estimatedDurationMin: Math.max(5, Math.round(routeResult.durationSeconds / 60)),
+    }, token).then(data => setShipmentQuote(data.quote)).catch(() => setShipmentQuote(null))
+  }
+
   function handleDeliveryWizardNextStep() {
     const validationMessage =
       deliveryWizardStep === 'route'
@@ -1208,6 +1239,7 @@ export default function AppHomeScreen() {
     setFocusedField(null)
     setDeliveryFormError(null)
     setDeliveryWizardStep(nextStep)
+    if (nextStep === 'contacts') requestShipmentQuote()
   }
 
   function handleFieldFocus(field: SearchField) {
@@ -1266,6 +1298,8 @@ export default function AppHomeScreen() {
         deliveryAddress: [nextResult.destinationLabel, deliveryDraft.deliveryAddress].filter(Boolean).join(', '),
         weightKg,
         packageSize: (deliveryDraft.estimatedSize ?? 'medium').toUpperCase(),
+        estimatedDistanceKm: Math.max(0.5, nextResult.distanceMeters / 1000),
+        estimatedDurationMin: Math.max(5, Math.round(nextResult.durationSeconds / 60)),
         pickupContactName: user?.name ?? '',
         pickupContactPhone: user?.phone ?? '',
         recipientDetails: deliveryDraft.deliveryDetails,
@@ -1541,7 +1575,7 @@ export default function AppHomeScreen() {
     (showDeliveryRouteStep ? !destinationInput.trim() : false)
 
   const activeShipment = myShipments.find(shipment => isActiveShipmentStatus(shipment.status)) ?? null
-
+  const activeRouteAlert = routeAlerts[0] ?? null
   const resultsTranslateY = resultsProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [34, 0],
@@ -1564,6 +1598,20 @@ export default function AppHomeScreen() {
           onOpenNotifications={() => router.push('/(app)/notifications')}
           activeShipment={activeShipment}
           onResumeTracking={resumeTracking}
+          activeTravelRequest={null}
+          activeRouteAlert={activeRouteAlert}
+          routeAlerts={routeAlerts}
+          onOpenRouteAlert={alert => router.push({
+            pathname: '/(app)/route-alert',
+            params: {
+              id: alert.id,
+              origin: alert.originCity,
+              destination: alert.destinationCity,
+              date: alert.date,
+              ...(alert.notifiedAt ? { notifiedAt: alert.notifiedAt } : {}),
+            },
+          })}
+          onOpenTravelRequest={() => router.push('/(app)/travel')}
         />
       ) : (
         <>
@@ -2241,6 +2289,15 @@ export default function AppHomeScreen() {
                           </View>
                         </View>
 
+                        {shipmentQuote ? (
+                          <View style={styles.deliveryQuoteCard}>
+                            <Text style={styles.deliveryQuoteEyebrow}>Cotizacion estimada</Text>
+                            <Text style={styles.deliveryQuoteTotal}>${shipmentQuote.total.toLocaleString('es-AR')}</Text>
+                            <Text style={styles.deliveryQuoteText}>Base ${shipmentQuote.baseFee.toLocaleString('es-AR')} · distancia ${shipmentQuote.distanceFee.toLocaleString('es-AR')} · tiempo ${shipmentQuote.timeFee.toLocaleString('es-AR')} · paquete ${((shipmentQuote.weightFee + shipmentQuote.sizeSurcharge)).toLocaleString('es-AR')} · servicio ${shipmentQuote.platformFee.toLocaleString('es-AR')}</Text>
+                            <Text style={styles.deliveryQuoteHint}>El monto se congela cuando un conductor acepta tu envio.</Text>
+                          </View>
+                        ) : null}
+
                         <View style={styles.deliveryFieldStack}>
                           <View style={styles.deliveryFieldCard}>
                             <Text style={styles.deliveryFieldLabel}>Peso estimado *</Text>
@@ -2869,6 +2926,18 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
   },
+  deliveryQuoteCard: {
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 14,
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: colors.lime,
+  },
+  deliveryQuoteEyebrow: { color: colors.lime, fontFamily: Theme.fonts.bold, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6 },
+  deliveryQuoteTotal: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 28, marginTop: 5 },
+  deliveryQuoteText: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 11, lineHeight: 17, marginTop: 5 },
+  deliveryQuoteHint: { color: colors.textSubtle, fontFamily: Theme.fonts.medium, fontSize: 11, lineHeight: 16, marginTop: 8 },
   deliveryFieldStack: {
     gap: 12,
   },

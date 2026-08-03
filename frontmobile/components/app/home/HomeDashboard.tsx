@@ -4,6 +4,7 @@ import { NativeScrollEvent, NativeSyntheticEvent, ScrollView, StyleSheet, Text, 
 import { Theme } from '../../../constants/theme'
 import type { User } from '../../../lib/auth'
 import type { MyShipment } from '../../../lib/shipments'
+import type { RouteAlert, TravelRequest } from '../../../lib/trips'
 import { useTheme } from '../../../lib/theme'
 import { Button } from '../../ui/Button'
 import { IconButton } from '../../ui/IconButton'
@@ -22,6 +23,11 @@ type Props = {
   onOpenNotifications: () => void
   activeShipment: MyShipment | null
   onResumeTracking: (shipment: MyShipment) => void
+  activeTravelRequest: TravelRequest | null
+  onOpenTravelRequest: (travelRequest: TravelRequest) => void
+  activeRouteAlert?: RouteAlert | null
+  routeAlerts?: RouteAlert[]
+  onOpenRouteAlert: (alert: RouteAlert) => void
 }
 
 function getFirstName(name?: string) {
@@ -44,6 +50,11 @@ export function HomeDashboard({
   onOpenNotifications,
   activeShipment,
   onResumeTracking,
+  activeTravelRequest,
+  onOpenTravelRequest,
+  activeRouteAlert,
+  routeAlerts = [],
+  onOpenRouteAlert,
 }: Props) {
   const { palette } = useTheme()
   const colors = palette.colors
@@ -52,6 +63,9 @@ export function HomeDashboard({
   const { width } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
   const [page, setPage] = useState(0)
+  const routeAlertLabel = activeRouteAlert
+    ? (activeRouteAlert.notifiedAt ? 'Hay un viaje disponible' : 'Seguimos tu ruta')
+    : null
 
   function goToPage(index: number) {
     setPage(index)
@@ -125,12 +139,48 @@ export function HomeDashboard({
 
         {/* Página 2: quiero viajar */}
         <View style={[styles.page, { width }]}>
-          <View style={styles.heroIconWrap}>
-            <Ionicons name="car-sport" size={40} color={colors.lime} />
-          </View>
-          <Text style={styles.heroTitle}>Quiero viajar</Text>
-          <Text style={styles.heroSubtitle}>Sumate a un viaje de un punto a otro y compartí el camino.</Text>
-          <Button label="Buscar un viaje" onPress={onOpenTravel} style={styles.heroButton} />
+          {routeAlerts.length > 0 ? (
+            <ScrollView style={styles.routeAlertScroll} contentContainerStyle={styles.routeAlertList} showsVerticalScrollIndicator={false}>
+              <Text style={styles.routeAlertListTitle}>Seguimientos de ruta</Text>
+              {routeAlerts.map(alert => (
+                <TouchableOpacity key={alert.id} style={styles.travelRequestCard} activeOpacity={0.85} onPress={() => onOpenRouteAlert(alert)}>
+                  <View style={styles.travelRequestTop}>
+                    <View style={styles.travelRequestIcon}><Ionicons name={alert.notifiedAt ? 'car-sport' : 'notifications-outline'} size={20} color={colors.lime} /></View>
+                    <View style={styles.travelRequestCopy}>
+                      <Text style={styles.travelRequestLabel}>{alert.notifiedAt ? 'Hay un viaje disponible' : 'Seguimos tu ruta'}</Text>
+                      <Text style={styles.travelRequestRoute}>{alert.originCity} → {alert.destinationCity}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                  </View>
+                  <Text style={styles.travelRequestDate}>{new Date(`${alert.date}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+                  <Text style={styles.travelRequestHint}>{alert.notifiedAt ? 'Tocá para buscar el viaje disponible.' : 'Te avisamos cuando se publique una ruta compatible.'}</Text>
+                </TouchableOpacity>
+              ))}
+              <Button label="Buscar otro viaje" onPress={onOpenTravel} style={styles.routeAlertSearchButton} />
+            </ScrollView>
+          ) : activeTravelRequest ? (
+            <TouchableOpacity style={styles.travelRequestCard} activeOpacity={0.85} onPress={() => onOpenTravelRequest(activeTravelRequest)}>
+              <View style={styles.travelRequestTop}>
+                <View style={styles.travelRequestIcon}><Ionicons name={activeTravelRequest.status === 'PUBLISHED' ? 'megaphone-outline' : 'search'} size={20} color={colors.lime} /></View>
+                <View style={styles.travelRequestCopy}>
+                  <Text style={styles.travelRequestLabel}>{routeAlertLabel ?? (activeTravelRequest.status === 'PUBLISHED' ? 'Viaje publicado' : 'Buscando tu viaje')}</Text>
+                  <Text style={styles.travelRequestRoute}>{activeTravelRequest.originCity} → {activeTravelRequest.destinationCity}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+              </View>
+              <Text style={styles.travelRequestDate}>{new Date(`${activeTravelRequest.date}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+              <Text style={styles.travelRequestHint}>{routeAlertLabel ? (activeRouteAlert?.notifiedAt ? 'Tocá para buscar el viaje disponible.' : 'Te avisamos cuando se publique una ruta compatible.') : (activeTravelRequest.status === 'PUBLISHED' ? 'Los conductores compatibles pueden verlo y sumarse.' : 'Ya avisamos a conductores que recorren este trayecto.')}</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <View style={styles.heroIconWrap}>
+                <Ionicons name="car-sport" size={40} color={colors.lime} />
+              </View>
+              <Text style={styles.heroTitle}>Quiero viajar</Text>
+              <Text style={styles.heroSubtitle}>Sumate a un viaje de un punto a otro y compartí el camino.</Text>
+              <Button label="Buscar un viaje" onPress={onOpenTravel} style={styles.heroButton} />
+            </>
+          )}
         </View>
       </ScrollView>
     </ScreenSafeArea>
@@ -211,6 +261,10 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
     paddingHorizontal: 32,
     gap: 6,
   },
+  routeAlertScroll: { alignSelf: 'stretch', flex: 1 },
+  routeAlertList: { paddingVertical: 12, gap: 12 },
+  routeAlertListTitle: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 22, marginBottom: 2 },
+  routeAlertSearchButton: { marginTop: 4 },
   heroIconWrap: {
     width: 84,
     height: 84,
@@ -239,4 +293,12 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   heroButton: {
     width: '100%',
   },
+  travelRequestCard: { width: '100%', padding: 18, borderRadius: 20, gap: 10, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  travelRequestTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  travelRequestIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceElevated },
+  travelRequestCopy: { flex: 1 },
+  travelRequestLabel: { color: colors.lime, fontFamily: Theme.fonts.bold, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  travelRequestRoute: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16, marginTop: 2 },
+  travelRequestDate: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13, textTransform: 'capitalize' },
+  travelRequestHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 18 },
 })

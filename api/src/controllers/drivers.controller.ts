@@ -16,15 +16,13 @@ function dayKey(d: Date): string {
 export async function getDriverStats(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const driverId = req.userId!
-    const feePercent = Number(process.env.PLATFORM_FEE_PERCENT ?? 12)
-
     const jobs = await prisma.shipmentJob.findMany({
       where: { driverId },
       select: {
         status: true,
         deliveredAt: true,
-        shipment: { select: { weightKg: true } },
-        route: { select: { pricePerKg: true } },
+        quotedTotal: true,
+        platformFee: true,
       },
     })
 
@@ -51,8 +49,7 @@ export async function getDriverStats(req: AuthRequest, res: Response, next: Next
       if (job.status !== 'COMPLETED') continue
 
       completedTotal++
-      const gross = (job.shipment?.weightKg ?? 0) * (job.route?.pricePerKg ?? 0)
-      const net = gross * (1 - feePercent / 100)
+      const net = Math.max(0, job.quotedTotal - job.platformFee)
       earningsTotal += net
 
       if (job.deliveredAt) {

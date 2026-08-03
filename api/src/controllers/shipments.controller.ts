@@ -7,6 +7,7 @@ import { findCandidateDrivers, normalize } from '../lib/matching'
 import { notifyNextCandidate, advanceQueue } from '../services/shipmentQueue'
 import { sendPushNotification } from '../services/notifications'
 import { emitToUser } from '../lib/socket'
+import { quoteShipment } from '../services/shipmentPricing'
 
 type ShipmentParams = { id: string }
 
@@ -19,12 +20,33 @@ const createShipmentSchema = z.object({
   deliveryAddress: z.string().min(1),
   weightKg: z.number().positive(),
   packageSize: z.enum(SIZE_VALUES),
+  estimatedDistanceKm: z.number().positive().max(3000),
+  estimatedDurationMin: z.number().int().positive().max(4320),
   preferredDate: z.string().datetime().optional(),
   pickupContactName: z.string().min(1),
   pickupContactPhone: z.string().min(1),
   recipientDetails: z.string().optional(),
   notes: z.string().optional(),
 })
+
+const shipmentQuoteSchema = z.object({
+  weightKg: z.number().positive(),
+  packageSize: z.enum(SIZE_VALUES),
+  estimatedDistanceKm: z.number().positive().max(3000),
+  estimatedDurationMin: z.number().int().positive().max(4320),
+})
+
+export async function getShipmentQuote(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const input = shipmentQuoteSchema.parse(req.body)
+    res.json({ quote: quoteShipment({
+      distanceKm: input.estimatedDistanceKm,
+      durationMin: input.estimatedDurationMin,
+      weightKg: input.weightKg,
+      packageSize: input.packageSize,
+    }) })
+  } catch (err) { next(err) }
+}
 
 export async function createShipment(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -82,6 +104,7 @@ export async function getShipmentById(req: AuthRequest<ShipmentParams>, res: Res
             driver: {
               select: { id: true, name: true, avatarUrl: true, rating: true, ratingCount: true, phone: true },
             },
+            payment: { select: { status: true, amount: true } },
           },
         },
       },
@@ -131,6 +154,7 @@ export async function getMyShipments(req: AuthRequest, res: Response, next: Next
             driver: {
               select: { id: true, name: true, avatarUrl: true, rating: true },
             },
+            payment: { select: { status: true, amount: true } },
           },
         },
       },
@@ -253,9 +277,7 @@ export async function getJobById(req: AuthRequest<ShipmentParams>, res: Response
 
     // Ganancia estimada neta (peso x precio/kg, menos fee de plataforma), misma
     // fórmula que getDriverStats para que el detalle y "Ganancias" coincidan.
-    const feePercent = Number(process.env.PLATFORM_FEE_PERCENT ?? 12)
-    const gross = (job.shipment.weightKg ?? 0) * (job.route.pricePerKg ?? 0)
-    const estimatedEarning = Math.round(gross * (1 - feePercent / 100))
+    const estimatedEarning = Math.max(0, job.quotedTotal - job.platformFee)
 
     res.json({ job: { ...job, estimatedEarning } })
   } catch (err) {
@@ -542,6 +564,12 @@ export async function respondToShipment(req: AuthRequest<ShipmentParams>, res: R
 
       // Atomic accept: updateMany only succeeds if status is still SEARCHING,
       // preventing two concurrent accepts from creating duplicate jobs
+      const quote = quoteShipment({
+        distanceKm: shipment.estimatedDistanceKm,
+        durationMin: shipment.estimatedDurationMin,
+        weightKg: shipment.weightKg,
+        packageSize: shipment.packageSize,
+      })
       const job = await prisma.$transaction(async tx => {
         const claimed = await tx.shipment.updateMany({
           where: { id: shipment.id, status: 'SEARCHING' },
@@ -555,6 +583,13 @@ export async function respondToShipment(req: AuthRequest<ShipmentParams>, res: R
             shipmentId: shipment.id,
             driverId: req.userId!,
             routeId: matched.routeId,
+            baseFee: quote.baseFee,
+            distanceFee: quote.distanceFee,
+            timeFee: quote.timeFee,
+            weightFee: quote.weightFee,
+            sizeSurcharge: quote.sizeSurcharge,
+            platformFee: quote.platformFee,
+            quotedTotal: quote.total,
           },
         })
       })

@@ -31,9 +31,11 @@ export async function getUserProfile(req: AuthRequest<UserParams>, res: Response
     if (!user) throw new AppError('Usuario no encontrado', 404)
 
     // Stats en paralelo: entregas hechas como conductor y envíos enviados como remitente.
-    const [deliveries, shipments, reviews] = await Promise.all([
+    const [deliveries, shipments, ridesAsPassenger, ridesAsDriver, reviews] = await Promise.all([
       prisma.shipmentJob.count({ where: { driverId: id, status: 'COMPLETED' } }),
       prisma.shipment.count({ where: { senderId: id, status: 'DELIVERED' } }),
+      prisma.rideBooking.count({ where: { passengerId: id, status: 'PAID' } }),
+      prisma.rideBooking.count({ where: { route: { driverId: id }, status: 'PAID' } }),
       prisma.review.findMany({
         where: { toId: id },
         orderBy: { createdAt: 'desc' },
@@ -58,7 +60,7 @@ export async function getUserProfile(req: AuthRequest<UserParams>, res: Response
         createdAt: user.createdAt,
         isIdentityVerified: user.driverVerifiedAt != null || user.driverVerificationStatus === 'APPROVED',
         isPhoneVerified: user.phoneVerifiedAt != null,
-        stats: { deliveries, shipments },
+        stats: { deliveries, shipments, ridesAsPassenger, ridesAsDriver },
         reviews,
       },
     })

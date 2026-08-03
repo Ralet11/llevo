@@ -160,11 +160,7 @@ export default function DriverJobScreen() {
   const cumulativePolyline = useMemo<CumulativePoint[]>(() => buildCumulativePolyline(routeCoords), [routeCoords])
   const stepBoundaries = useMemo(() => buildStepBoundaries(steps), [steps])
 
-  useFocusEffect(
-    useCallback(() => {
-      void loadJob()
-    }, [token])
-  )
+  const loadJobRef = useRef<() => Promise<void>>(async () => {})
 
   async function loadJob() {
     if (!token) return
@@ -187,6 +183,15 @@ export default function DriverJobScreen() {
       setLoading(false)
     }
   }
+
+  // Mantiene la carga más reciente sin reabrir la pantalla en cada render.
+  loadJobRef.current = loadJob
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadJobRef.current()
+    }, [])
+  )
 
   function resetNavProgress() {
     currentStepIndexRef.current = 0

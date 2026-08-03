@@ -31,6 +31,81 @@ export type TripSearchResult = {
   options: TripOption[]
 }
 
+export type TravelRequestStatus = 'SEARCHING' | 'PUBLISHED' | 'MATCHED' | 'CONFIRMED' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED'
+
+export type TravelRequest = {
+  id: string
+  originCity: string
+  destinationCity: string
+  date: string
+  seats: number
+  status: TravelRequestStatus
+  searchDeadline: string
+  publishedAt: string | null
+  createdAt: string
+  matchedRoute: { id: string; originCity: string; destinationCity: string; departureTimeFrom: string | null; departureTimeTo: string | null } | null
+  booking: { id: string; status: RideBookingStatus } | null
+}
+
+export function createTravelRequest(
+  token: string,
+  params: { originCity: string; destinationCity: string; dateISO: string; seats?: number },
+) {
+  return api.post<{ travelRequest: TravelRequest; candidateCount: number }>('/trips/travel-requests', {
+    originCity: params.originCity,
+    destinationCity: params.destinationCity,
+    date: params.dateISO,
+    seats: params.seats ?? 1,
+  }, token)
+}
+
+export function createRouteAlert(token: string, params: { originCity: string; destinationCity: string; dateISO: string }) {
+  return api.post<{ alert: { id: string } }>('/trips/route-alerts', {
+    originCity: params.originCity,
+    destinationCity: params.destinationCity,
+    date: params.dateISO,
+  }, token)
+}
+
+export type RouteAlert = {
+  id: string
+  originCity: string
+  destinationCity: string
+  date: string
+  notifiedAt: string | null
+  createdAt: string
+}
+
+export function fetchMyRouteAlerts(token: string) {
+  return api.get<{ alerts: RouteAlert[] }>('/trips/route-alerts/mine', token).then(data => data.alerts)
+}
+
+export function cancelRouteAlert(token: string, id: string) {
+  return api.delete<{ ok: true }>(`/trips/route-alerts/${id}`, token)
+}
+
+export function fetchMyTravelRequests(token: string) {
+  return api.get<{ travelRequests: TravelRequest[] }>('/trips/travel-requests/mine', token).then(data => data.travelRequests)
+}
+
+export function cancelTravelRequest(token: string, id: string) {
+  return api.post<{ travelRequest: TravelRequest }>(`/trips/travel-requests/${id}/cancel`, {}, token)
+}
+
+export type DriverTravelOpportunity = {
+  id: string
+  route: { id: string; originCity: string; destinationCity: string; departureTimeFrom: string | null; departureTimeTo: string | null }
+  travelRequest: Pick<TravelRequest, 'id' | 'originCity' | 'destinationCity' | 'date' | 'seats' | 'status' | 'searchDeadline' | 'publishedAt' | 'createdAt'>
+}
+
+export function fetchDriverTravelOpportunities(token: string) {
+  return api.get<{ opportunities: DriverTravelOpportunity[] }>('/trips/travel-requests/opportunities', token).then(data => data.opportunities)
+}
+
+export function respondToTravelRequest(token: string, id: string, action: 'accept' | 'reject') {
+  return api.post<{ ok: boolean }>(`/trips/travel-requests/${id}/respond`, { action }, token)
+}
+
 export function searchTrips(
   token: string,
   params: { originCity: string; destinationCity: string; dateISO: string },
@@ -105,4 +180,8 @@ export function respondBooking(token: string, id: string, action: 'approve' | 'r
 
 export function cancelBooking(token: string, id: string) {
   return api.post<{ ok: boolean }>(`/trips/bookings/${id}/cancel`, {}, token)
+}
+
+export function createRideCheckout(token: string, id: string) {
+  return api.post<{ checkoutUrl: string; paymentId: string }>(`/payments/ride-bookings/${id}/checkout`, {}, token)
 }

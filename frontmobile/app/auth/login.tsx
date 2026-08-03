@@ -11,6 +11,7 @@ import { COUNTRIES, DEFAULT_COUNTRY_ISO2, findCountry, type Country } from '../.
 import { Theme } from '../../constants/theme'
 import { toE164 } from '../../lib/phone'
 import { useAuth } from '../../lib/auth'
+import { themedStyles } from '../../lib/theme'
 
 type LoginMethod = 'phone' | 'email'
 type EmailStep = 'email' | 'password' | 'code' | 'setPassword'
@@ -424,7 +425,9 @@ export default function LoginScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+// Esta pantalla puede montarse antes de que se restaure la paleta guardada.
+// El proxy recompone los estilos estáticos cuando cambia el tema activo.
+const styles = themedStyles(() => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Theme.colors.background,
@@ -696,4 +699,4 @@ const styles = StyleSheet.create({
     fontFamily: Theme.fonts.bold,
     fontSize: 13,
   },
-})
+}))

@@ -1,0 +1,34 @@
+terms:
+  driver_route:
+    client_term: ruta publicada por un conductor
+    description: Recorrido y días en los que un conductor ofrece viajar.
+  ride_booking:
+    client_term: reserva de viaje
+    description: Pedido de uno o más asientos para una fecha y ruta concretas.
+  route_alert:
+    client_term: seguimiento de ruta
+    description: Aviso que una persona activa para enterarse si aparece un viaje compatible.
+  shipment:
+    client_term: envío
+    description: Solicitud para trasladar un paquete entre un origen y un destino.
+  shipment_quote:
+    client_term: cotización de envío
+    description: Estimación del precio de un envío antes de confirmarlo.
+  shipment_job:
+    client_term: entrega asignada
+    description: Envío que un conductor aceptó realizar.
+  price_per_seat:
+    client_term: precio por asiento
+    description: Importe indicado por el conductor para cada lugar de su ruta.
+  payment:
+    client_term: pago de la reserva o del envío
+    description: Cobro asociado a una reserva de viaje o a una entrega asignada.
+  identity_verification:
+    client_term: identidad verificada
+    description: Estado de verificación del conductor mostrado como señal de confianza.
+  public_profile:
+    client_term: perfil público
+    description: Ficha de confianza visible para personas relacionadas con un viaje o envío.
+  push_notification:
+    client_term: notificación al dispositivo
+    description: Aviso que Llevo puede enviar si la persona otorgó permiso.
