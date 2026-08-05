@@ -85,14 +85,13 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
     const isFutureShipment = preferredDateObj &&
       preferredDateObj.getTime() - Date.now() > FUTURE_THRESHOLD_MS
 
-    if (status === 'SEARCHING' && !isFutureShipment) {
-      if (useDemoShipmentBot) {
-        scheduleDemoShipmentAcceptance(shipment.id)
-      } else {
-        notifyNextCandidate(shipment.id).catch(err =>
-          console.error('[queue] Error notificando primer candidato:', err)
-        )
-      }
+    if (useDemoShipmentBot) {
+      // La demo debe poder recorrer todo el flujo aunque el tester programe el envío para otro día.
+      scheduleDemoShipmentAcceptance(shipment.id)
+    } else if (status === 'SEARCHING' && !isFutureShipment) {
+      notifyNextCandidate(shipment.id).catch(err =>
+        console.error('[queue] Error notificando primer candidato:', err)
+      )
     }
 
     res.status(201).json({ shipment, candidatesFound: candidateDriverIds.length })

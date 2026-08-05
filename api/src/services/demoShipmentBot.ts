@@ -257,8 +257,7 @@ export async function reconcileDemoShipmentBot() {
     take: 100,
   })
   for (const shipment of waiting) {
-    const isDueSoon = !shipment.preferredDate || shipment.preferredDate.getTime() - Date.now() <= 3 * 60 * 60 * 1000
-    if (isDueSoon && isAllowedTester(shipment.senderId, shipment.sender.email, config)) scheduleDemoShipmentAcceptance(shipment.id)
+    if (isAllowedTester(shipment.senderId, shipment.sender.email, config)) scheduleDemoShipmentAcceptance(shipment.id)
   }
 
   const paidDemoJobs = await prisma.shipmentJob.findMany({
