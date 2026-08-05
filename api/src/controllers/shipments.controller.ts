@@ -8,6 +8,7 @@ import { notifyNextCandidate, advanceQueue } from '../services/shipmentQueue'
 import { sendPushNotification } from '../services/notifications'
 import { emitToUser } from '../lib/socket'
 import { quoteShipment } from '../services/shipmentPricing'
+import { scheduleDemoShipmentAcceptance, shouldUseDemoShipmentBot } from '../services/demoShipmentBot'
 
 type ShipmentParams = { id: string }
 
@@ -63,7 +64,9 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
     })
 
     const candidateDriverIds = candidates.map(c => c.driverId)
-    const status = candidateDriverIds.length === 0 ? 'NO_COVERAGE' : 'SEARCHING'
+    const sender = await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } })
+    const useDemoShipmentBot = shouldUseDemoShipmentBot(req.userId!, sender?.email, candidateDriverIds.length)
+    const status = candidateDriverIds.length === 0 && !useDemoShipmentBot ? 'NO_COVERAGE' : 'SEARCHING'
 
     const shipment = await prisma.shipment.create({
       data: {
@@ -83,9 +86,13 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
       preferredDateObj.getTime() - Date.now() > FUTURE_THRESHOLD_MS
 
     if (status === 'SEARCHING' && !isFutureShipment) {
-      notifyNextCandidate(shipment.id).catch(err =>
-        console.error('[queue] Error notificando primer candidato:', err)
-      )
+      if (useDemoShipmentBot) {
+        scheduleDemoShipmentAcceptance(shipment.id)
+      } else {
+        notifyNextCandidate(shipment.id).catch(err =>
+          console.error('[queue] Error notificando primer candidato:', err)
+        )
+      }
     }
 
     res.status(201).json({ shipment, candidatesFound: candidateDriverIds.length })

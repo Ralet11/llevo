@@ -4,6 +4,7 @@ import prisma from '../lib/prisma'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
 import { emitToUser } from '../lib/socket'
+import { scheduleDemoShipmentLifecycle } from '../services/demoShipmentBot'
 
 function paymentConfig() {
   const accessToken = process.env.MP_ACCESS_TOKEN
@@ -108,7 +109,10 @@ export async function mercadoPagoWebhook(req: Request, res: Response, next: Next
         if (payment.rideBooking) await tx.rideBooking.update({ where: { id: payment.rideBooking.id }, data: { status: 'PAID' } })
       })
       if (payment.rideBooking) emitToUser(payment.rideBooking.passengerId, 'ride:status_changed', { bookingId: payment.rideBooking.id, status: 'PAID' })
-      if (payment.shipmentJob) emitToUser(payment.shipmentJob.shipment.senderId, 'shipment:payment_changed', { shipmentId: payment.shipmentJob.shipmentId, status: 'PAID' })
+      if (payment.shipmentJob) {
+        emitToUser(payment.shipmentJob.shipment.senderId, 'shipment:payment_changed', { shipmentId: payment.shipmentJob.shipmentId, status: 'PAID' })
+        scheduleDemoShipmentLifecycle(payment.shipmentJob.id)
+      }
     } else if (['rejected', 'cancelled'].includes(providerPayment.status ?? '')) {
       await prisma.payment.update({ where: { id: payment.id }, data: { status: 'FAILED', providerPaymentId: paymentId } })
     }

@@ -170,6 +170,13 @@ Módulos de API: identidad y confianza, supply de conductores, viajes, matching,
 - Variables exclusivas del backend: `MP_ACCESS_TOKEN`, `MP_PUBLIC_KEY`,
   `MP_WEBHOOK_URL` y `MP_WEBHOOK_SECRET`.
 
+### Demo controlada de envios
+
+- Para pruebas internas existe un bot de envios apagado por defecto.
+- Requiere `DEMO_SHIPMENT_BOT_ENABLED=true` y `DEMO_SHIPMENT_BOT_ALLOWED_EMAILS` o `DEMO_SHIPMENT_BOT_ALLOWED_USER_IDS` con los testers autorizados.
+- Solo acepta pedidos sin conductor real compatible y espera la confirmacion del pago antes de simular retiro y entrega.
+- Las demoras se ajustan con `DEMO_SHIPMENT_BOT_ACCEPT_DELAY_MS`, `DEMO_SHIPMENT_BOT_PICKUP_DELAY_MS` y `DEMO_SHIPMENT_BOT_DELIVERY_DELAY_MS`.
+
 ### Web
 
 Existe una landing mínima. No hay todavía panel de operaciones ni experiencia web funcional de conductor/pasajero.

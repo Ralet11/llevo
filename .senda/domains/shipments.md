@@ -16,6 +16,14 @@ Estado: implementado
 - Aplica a paquetes y entregas, no a reservas de pasajeros.
 - El precio cotizado corresponde al envío; no prueba el precio de un viaje.
 
+## Entorno de demostracion para testers
+
+- El bot de envios esta apagado por defecto.
+- Solo puede activarse con `DEMO_SHIPMENT_BOT_ENABLED=true` y una lista explicita de emails o IDs de usuario autorizados.
+- Solo interviene si no existe ningun conductor real compatible; nunca reemplaza ni contacta a conductores reales.
+- El conductor se identifica como `Conductor de prueba`, espera un pago aprobado y luego simula retiro y entrega con demoras configurables.
+- Es una herramienta de prueba controlada, no una promesa de servicio ni un mecanismo de produccion general.
+
 ## No confirmado o no implementado
 
 - No se encontró una promesa de cobertura nacional ni una lista pública de zonas cubiertas.

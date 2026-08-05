@@ -8,6 +8,7 @@ import { initSocketIO } from './lib/socket'
 import { checkTimeouts } from './services/shipmentQueue'
 import { loadEnv } from './config/env'
 import { publishExpiredTravelRequests } from './services/travelRequestMatching'
+import { reconcileDemoShipmentBot } from './services/demoShipmentBot'
 
 async function start() {
   const env = loadEnv()
@@ -36,6 +37,7 @@ async function start() {
     await Promise.all([
       checkTimeouts(),
       publishExpiredTravelRequests(),
+      reconcileDemoShipmentBot(),
     ])
   }
 
