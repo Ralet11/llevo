@@ -13,6 +13,7 @@ const deliveryTimers = new Map<string, NodeJS.Timeout>()
 
 type DemoBotConfig = {
   enabled: boolean
+  allowAllUsers: boolean
   allowedEmails: Set<string>
   allowedUserIds: Set<string>
   acceptDelayMs: number
@@ -32,6 +33,7 @@ function delay(name: string, fallback: number) {
 function getConfig(): DemoBotConfig {
   return {
     enabled: enabled(process.env.DEMO_SHIPMENT_BOT_ENABLED),
+    allowAllUsers: enabled(process.env.DEMO_SHIPMENT_BOT_ALLOW_ALL_USERS),
     allowedEmails: new Set(
       (process.env.DEMO_SHIPMENT_BOT_ALLOWED_EMAILS ?? '')
         .split(',')
@@ -52,6 +54,7 @@ function getConfig(): DemoBotConfig {
 
 function isAllowedTester(userId: string, email: string | null | undefined, config = getConfig()) {
   return config.enabled && (
+    config.allowAllUsers ||
     config.allowedUserIds.has(userId) ||
     (!!email && config.allowedEmails.has(email.trim().toLowerCase()))
   )

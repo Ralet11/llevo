@@ -20,6 +20,7 @@ Estado: implementado
 
 - El bot de envios esta apagado por defecto.
 - Solo puede activarse con `DEMO_SHIPMENT_BOT_ENABLED=true` y una lista explicita de emails o IDs de usuario autorizados.
+- `DEMO_SHIPMENT_BOT_ALLOW_ALL_USERS=true` extiende el demo a todos los usuarios y debe usarse solo durante pruebas controladas.
 - Solo interviene si no existe ningun conductor real compatible; nunca reemplaza ni contacta a conductores reales.
 - El conductor se identifica como `Conductor de prueba`, espera un pago aprobado y luego simula retiro y entrega con demoras configurables.
 - Es una herramienta de prueba controlada, no una promesa de servicio ni un mecanismo de produccion general.

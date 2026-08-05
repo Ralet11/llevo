@@ -174,6 +174,7 @@ Módulos de API: identidad y confianza, supply de conductores, viajes, matching,
 
 - Para pruebas internas existe un bot de envios apagado por defecto.
 - Requiere `DEMO_SHIPMENT_BOT_ENABLED=true` y `DEMO_SHIPMENT_BOT_ALLOWED_EMAILS` o `DEMO_SHIPMENT_BOT_ALLOWED_USER_IDS` con los testers autorizados.
+- `DEMO_SHIPMENT_BOT_ALLOW_ALL_USERS=true` habilita temporalmente el demo para todos los usuarios.
 - Solo acepta pedidos sin conductor real compatible y espera la confirmacion del pago antes de simular retiro y entrega.
 - Las demoras se ajustan con `DEMO_SHIPMENT_BOT_ACCEPT_DELAY_MS`, `DEMO_SHIPMENT_BOT_PICKUP_DELAY_MS` y `DEMO_SHIPMENT_BOT_DELIVERY_DELAY_MS`.
 
