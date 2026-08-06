@@ -14,6 +14,7 @@ const deliveryTimers = new Map<string, NodeJS.Timeout>()
 type DemoBotConfig = {
   enabled: boolean
   allowAllUsers: boolean
+  skipPayment: boolean
   allowedEmails: Set<string>
   allowedUserIds: Set<string>
   acceptDelayMs: number
@@ -34,6 +35,7 @@ function getConfig(): DemoBotConfig {
   return {
     enabled: enabled(process.env.DEMO_SHIPMENT_BOT_ENABLED),
     allowAllUsers: enabled(process.env.DEMO_SHIPMENT_BOT_ALLOW_ALL_USERS),
+    skipPayment: enabled(process.env.DEMO_SHIPMENT_BOT_SKIP_PAYMENT),
     allowedEmails: new Set(
       (process.env.DEMO_SHIPMENT_BOT_ALLOWED_EMAILS ?? '')
         .split(',')
@@ -58,6 +60,12 @@ function isAllowedTester(userId: string, email: string | null | undefined, confi
     config.allowedUserIds.has(userId) ||
     (!!email && config.allowedEmails.has(email.trim().toLowerCase()))
   )
+}
+
+// Solo se usa durante demostraciones controladas. Nunca marca un pago como
+// aprobado: simplemente permite que el conductor ficticio recorra el flujo.
+function canAdvanceLifecycle(paymentStatus: string | undefined, config: DemoBotConfig) {
+  return config.skipPayment || paymentStatus === 'IN_ESCROW'
 }
 
 export function shouldUseDemoShipmentBot(userId: string, email: string | null | undefined, realCandidateCount: number) {
@@ -164,11 +172,14 @@ async function acceptWithDemoDriver(shipmentId: string) {
     await sendPushNotification({
       to: shipment.sender.pushToken,
       title: 'Conductor de prueba asignado',
-      body: 'Tu envío de demostración está listo para continuar con el pago de prueba.',
+      body: config.skipPayment
+        ? 'Tu envío de demostración iniciará automáticamente en unos segundos.'
+        : 'Tu envío de demostración está listo para continuar con el pago de prueba.',
       data: { shipmentId: shipment.id, type: 'shipment_accepted', demo: 'true' },
     })
   }
   console.log(`[demo-shipment-bot] Envío demo asignado: ${shipment.id}`)
+  if (config.skipPayment) scheduleDemoShipmentLifecycle(accepted.job.id)
   return true
 }
 
@@ -201,7 +212,8 @@ async function getDemoJob(jobId: string) {
 
 async function markDemoShipmentPickedUp(jobId: string) {
   const job = await getDemoJob(jobId)
-  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || job.payment?.status !== 'IN_ESCROW' || job.shipment.status !== 'ASSIGNED' || job.pickedUpAt) return false
+  const config = getConfig()
+  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || !canAdvanceLifecycle(job.payment?.status, config) || job.shipment.status !== 'ASSIGNED' || job.pickedUpAt) return false
 
   const updated = await prisma.$transaction(async tx => {
     const moved = await tx.shipment.updateMany({ where: { id: job.shipmentId, status: 'ASSIGNED' }, data: { status: 'PICKED_UP' } })
@@ -225,7 +237,8 @@ async function markDemoShipmentPickedUp(jobId: string) {
 
 async function markDemoShipmentDelivered(jobId: string) {
   const job = await getDemoJob(jobId)
-  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || job.payment?.status !== 'IN_ESCROW' || job.shipment.status !== 'PICKED_UP' || job.deliveredAt) return false
+  const config = getConfig()
+  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || !canAdvanceLifecycle(job.payment?.status, config) || job.shipment.status !== 'PICKED_UP' || job.deliveredAt) return false
 
   const updated = await prisma.$transaction(async tx => {
     const moved = await tx.shipment.updateMany({ where: { id: job.shipmentId, status: 'PICKED_UP' }, data: { status: 'DELIVERED' } })
@@ -260,16 +273,16 @@ export async function reconcileDemoShipmentBot() {
     if (isAllowedTester(shipment.senderId, shipment.sender.email, config)) scheduleDemoShipmentAcceptance(shipment.id)
   }
 
-  const paidDemoJobs = await prisma.shipmentJob.findMany({
+  const demoJobs = await prisma.shipmentJob.findMany({
     where: {
       status: 'ACTIVE',
       driver: { email: DEMO_DRIVER_EMAIL },
-      payment: { status: 'IN_ESCROW' },
     },
-    include: { shipment: { select: { status: true } } },
+    include: { shipment: { select: { status: true } }, payment: { select: { status: true } } },
     take: 100,
   })
-  for (const job of paidDemoJobs) {
+  for (const job of demoJobs) {
+    if (!canAdvanceLifecycle(job.payment?.status, config)) continue
     if (job.shipment.status === 'ASSIGNED') scheduleDemoShipmentLifecycle(job.id)
     if (job.shipment.status === 'PICKED_UP') scheduleDemoShipmentDelivery(job.id)
   }
