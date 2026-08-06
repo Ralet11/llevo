@@ -6,6 +6,7 @@ import { AuthRequest } from '../middleware/authenticate'
 import { normalize } from '../lib/matching'
 import { emitToUser } from '../lib/socket'
 import { sendPushNotification } from '../services/notifications'
+import { DEMO_RIDE_BOT_EMAIL, scheduleDemoRideApproval } from '../services/demoRideBot'
 
 type BookingParams = { id: string }
 
@@ -57,7 +58,7 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
 
     const route = await prisma.driverRoute.findUnique({
       where: { id: data.routeId },
-      include: { driver: { select: { id: true, pushToken: true } } },
+      include: { driver: { select: { id: true, email: true, pushToken: true } } },
     })
 
     if (!route || !route.isActive) throw new AppError('El viaje ya no está disponible', 404)
@@ -116,6 +117,7 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
         data: { bookingId: booking.id, type: 'ride_request' },
       })
     }
+    if (route.driver.email === DEMO_RIDE_BOT_EMAIL) scheduleDemoRideApproval(booking.id)
 
     res.status(201).json({ booking })
   } catch (err) {

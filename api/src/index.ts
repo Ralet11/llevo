@@ -9,6 +9,7 @@ import { checkTimeouts } from './services/shipmentQueue'
 import { loadEnv } from './config/env'
 import { publishExpiredTravelRequests } from './services/travelRequestMatching'
 import { reconcileDemoShipmentBot } from './services/demoShipmentBot'
+import { reconcileDemoRideBot } from './services/demoRideBot'
 
 async function start() {
   const env = loadEnv()
@@ -38,6 +39,7 @@ async function start() {
       checkTimeouts(),
       publishExpiredTravelRequests(),
       reconcileDemoShipmentBot(),
+      reconcileDemoRideBot(),
     ])
   }
 

@@ -4,6 +4,7 @@ import prisma from '../lib/prisma'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
 import { findPassengerTrips } from '../lib/matching'
+import { createDemoRideOption } from '../services/demoRideBot'
 
 type TripRouteParams = {
   id: string
@@ -32,6 +33,10 @@ export async function searchTrips(req: AuthRequest, res: Response, next: NextFun
       passengerId: req.userId!,
     })
 
+    if (!result.sameCity && result.options.length === 0) {
+      const demoOption = await createDemoRideOption({ passengerId: req.userId!, originCity, destinationCity, date: new Date(date) })
+      if (demoOption) result.options.push(demoOption)
+    }
     res.json(result)
   } catch (err) {
     next(err)

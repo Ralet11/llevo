@@ -1,4 +1,5 @@
 import prisma from './prisma'
+import { DEMO_RIDE_BOT_EMAIL } from '../services/demoRideBot'
 
 type MatchParams = {
   originCity: string
@@ -134,6 +135,7 @@ export type PassengerTripOption = {
     rating: number
     ratingCount: number
     isIdentityVerified: boolean
+    isDemo?: boolean
   }
   vehicle: { type: string; model: string | null; seats: number } | null
 }
@@ -165,6 +167,7 @@ export async function findPassengerTrips(params: PassengerSearchParams): Promise
       isActive: true,
       kind: 'INTERCITY',
       carriesPassengers: true,
+      driver: { email: { not: DEMO_RIDE_BOT_EMAIL } },
       ...(params.passengerId ? { driverId: { not: params.passengerId } } : {}),
     },
     include: {

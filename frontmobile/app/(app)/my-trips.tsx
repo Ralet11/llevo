@@ -75,6 +75,12 @@ export default function MyTripsScreen() {
     }
   }, [load])
 
+  useEffect(() => {
+    if (!bookings.some(booking => booking.status === 'PENDING' || booking.status === 'APPROVED')) return
+    const interval = setInterval(() => void load(), 5_000)
+    return () => clearInterval(interval)
+  }, [bookings, load])
+
   function confirmCancel(b: MyBooking) {
     Alert.alert('Cancelar solicitud', `¿Cancelar tu lugar en ${b.originCity} → ${b.destinationCity}?`, [
       { text: 'No', style: 'cancel' },

@@ -7,6 +7,7 @@ export type TripDriver = {
   rating: number
   ratingCount: number
   isIdentityVerified: boolean
+  isDemo?: boolean
 }
 
 export type TripVehicle = { type: string; model: string | null; seats: number }

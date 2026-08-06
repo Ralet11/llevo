@@ -412,6 +412,7 @@ function TripCard({ option, requesting, onRequest }: { option: TripOption; reque
         <View style={s.driverCopy}>
           <View style={s.driverNameRow}>
             <Text style={s.driverName}>{option.driver.name}</Text>
+            {option.driver.isDemo ? <Text style={s.demoBadge}>Prueba</Text> : null}
             {option.driver.isIdentityVerified ? (
               <Ionicons name="shield-checkmark" size={13} color={colors.lime} />
             ) : null}
@@ -447,6 +448,7 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   headerTitle: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16, marginTop: 2 },
   myTripsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
   myTripsBtnText: { color: colors.lime, fontFamily: Theme.fonts.semiBold, fontSize: 12 },
+  demoBadge: { color: colors.black, backgroundColor: colors.lime, borderRadius: 6, overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, fontFamily: Theme.fonts.bold, fontSize: 9 },
   content: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10, gap: 12 },
   resultsScreen: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 32, gap: 16 },
   resultSearchSummary: { padding: 16, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
