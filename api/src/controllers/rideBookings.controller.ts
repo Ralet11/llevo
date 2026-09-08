@@ -4,14 +4,32 @@ import prisma from '../lib/prisma'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
 import { normalize } from '../lib/matching'
+import { serializable } from '../lib/transaction'
 import { emitToUser } from '../lib/socket'
 import { sendPushNotification } from '../services/notifications'
-import { DEMO_RIDE_BOT_EMAIL, scheduleDemoRideApproval } from '../services/demoRideBot'
+import { isDemoRideBotEmail, scheduleDemoRideApproval } from '../services/demoRideBot'
 
 type BookingParams = { id: string }
 
 // Estados que "reservan" un asiento (cuentan contra la capacidad).
 const HOLD_STATUSES = ['APPROVED', 'PAID'] as const
+
+export async function completeBooking(req: AuthRequest<BookingParams>, res: Response, next: NextFunction) {
+  try {
+    const booking = await serializable(async tx => {
+      const b = await tx.rideBooking.findFirst({ where: { id: req.params.id, route: { driverId: req.userId! } }, include: { payment: true } })
+      if (!b) throw new AppError('Reserva no encontrada', 404)
+      if (b.status === 'COMPLETED') return b
+      if (b.status !== 'PAID' || b.payment?.status !== 'IN_ESCROW') throw new AppError('Primero debe confirmarse el pago de prueba', 409)
+      await tx.rideBooking.update({ where: { id: b.id }, data: { status: 'COMPLETED' } })
+      await tx.payment.update({ where: { id: b.payment.id }, data: { status: 'RELEASED' } })
+      if (b.travelRequestId) await tx.travelRequest.update({ where: { id: b.travelRequestId }, data: { status: 'COMPLETED' } })
+      return b
+    })
+    emitToUser(booking.passengerId, 'ride:status_changed', { bookingId: booking.id, status: 'COMPLETED' })
+    res.json({ ok: true })
+  } catch (err) { next(err) }
+}
 
 function argentinaDateKey(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(date)
@@ -55,8 +73,10 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
   try {
     const data = createBookingSchema.parse(req.body)
     const dateKey = argentinaDateKey(new Date(data.date))
+    if (dateKey < argentinaDateKey(new Date())) throw new AppError('La fecha no puede estar en el pasado', 400)
 
-    const route = await prisma.driverRoute.findUnique({
+    const { booking, route } = await serializable(async tx => {
+    const route = await tx.driverRoute.findUnique({
       where: { id: data.routeId },
       include: { driver: { select: { id: true, email: true, pushToken: true } } },
     })
@@ -72,11 +92,11 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
     }
 
     // Conductor marcó ese día como no disponible.
-    const dayOff = await prisma.driverDayOff.findFirst({ where: { driverId: route.driverId, date: dateKey } })
+    const dayOff = await tx.driverDayOff.findFirst({ where: { driverId: route.driverId, date: dateKey } })
     if (dayOff) throw new AppError('El conductor no está disponible ese día', 400)
 
     // Ya tiene una solicitud activa para esta ruta+fecha.
-    const existing = await prisma.rideBooking.findFirst({
+    const existing = await tx.rideBooking.findFirst({
       where: {
         routeId: route.id,
         passengerId: req.userId!,
@@ -89,12 +109,12 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
 
     // Capacidad: asientos ofrecidos menos los ya reservados.
     const seatsOffered = route.seatsOffered ?? 0
-    const held = await heldSeats(route.id, dateKey)
+    const held = (await tx.rideBooking.aggregate({ where: { routeId: route.id, date: dateKey, status: { in: [...HOLD_STATUSES] } }, _sum: { seats: true } }))._sum.seats ?? 0
     if (seatsOffered - held < data.seats) {
       throw new AppError('Ya no quedan lugares suficientes en ese viaje', 409)
     }
 
-    const booking = await prisma.rideBooking.create({
+    const booking = await tx.rideBooking.create({
       data: {
         routeId: route.id,
         passengerId: req.userId!,
@@ -104,6 +124,9 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
         destinationCity: data.destinationCity,
         pricePerSeat: route.pricePerSeat,
       },
+    })
+
+      return { booking, route }
     })
 
     // Avisar al conductor.
@@ -117,7 +140,7 @@ export async function createBooking(req: AuthRequest, res: Response, next: NextF
         data: { bookingId: booking.id, type: 'ride_request' },
       })
     }
-    if (route.driver.email === DEMO_RIDE_BOT_EMAIL) scheduleDemoRideApproval(booking.id)
+    if (isDemoRideBotEmail(route.driver.email)) scheduleDemoRideApproval(booking.id)
 
     res.status(201).json({ booking })
   } catch (err) {
@@ -153,7 +176,7 @@ export async function getRideRequests(req: AuthRequest, res: Response, next: Nex
     const bookings = await prisma.rideBooking.findMany({
       where: {
         route: { driverId: req.userId! },
-        status: { in: ['PENDING', 'APPROVED', 'PAID'] },
+        status: { in: ['PENDING', 'APPROVED', 'PAID', 'COMPLETED'] },
       },
       orderBy: [{ status: 'asc' }, { date: 'asc' }, { createdAt: 'asc' }],
       take: 100,
@@ -171,81 +194,53 @@ export async function getRideRequests(req: AuthRequest, res: Response, next: Nex
 // Conductor aprueba o rechaza una solicitud.
 export async function respondBooking(req: AuthRequest<BookingParams>, res: Response, next: NextFunction) {
   try {
-    const { action } = req.body as { action: 'approve' | 'reject' }
-    if (action !== 'approve' && action !== 'reject') throw new AppError('Acción inválida', 400)
-
-    const booking = await prisma.rideBooking.findUnique({
-      where: { id: req.params.id },
-      include: {
-        route: { select: { id: true, driverId: true, seatsOffered: true, originCity: true, destinationCity: true } },
-        passenger: { select: { id: true, pushToken: true } },
-      },
-    })
-    if (!booking) throw new AppError('Solicitud no encontrada', 404)
-    if (booking.route.driverId !== req.userId) throw new AppError('No tenés permiso sobre esta solicitud', 403)
-    if (booking.status !== 'PENDING') throw new AppError('Esta solicitud ya fue respondida', 400)
-
-    if (action === 'reject') {
-      await prisma.rideBooking.update({ where: { id: booking.id }, data: { status: 'REJECTED' } })
-      emitToUser(booking.passengerId, 'ride:status_changed', { bookingId: booking.id, status: 'REJECTED' })
-      if (booking.passenger.pushToken) {
-        await sendPushNotification({
-          to: booking.passenger.pushToken,
-          title: 'Solicitud rechazada',
-          body: `El conductor no pudo sumarte al viaje ${booking.route.originCity} → ${booking.route.destinationCity}.`,
-          data: { bookingId: booking.id, type: 'ride_rejected' },
+    const action = z.enum(['approve', 'reject']).parse(req.body.action)
+    const result = await serializable(async tx => {
+      const booking = await tx.rideBooking.findUnique({ where: { id: req.params.id }, include: { route: true } })
+      if (!booking || booking.route.driverId !== req.userId) throw new AppError('Solicitud no encontrada', 404)
+      if (booking.status !== 'PENDING') throw new AppError('Esta solicitud ya fue respondida', 409)
+      if (action === 'approve') {
+        const route = booking.route
+        const driver = await tx.user.findUnique({ where: { id: req.userId! } })
+        if (!driver?.isActive || driver.driverVerificationStatus !== 'APPROVED') throw new AppError('Conductor no habilitado', 403)
+        if (!route.isActive || !route.carriesPassengers || booking.date < argentinaDateKey(new Date())) throw new AppError('El viaje ya no está disponible', 409)
+        const dayOff = await tx.driverDayOff.findFirst({ where: { driverId: req.userId!, date: booking.date } })
+        if (dayOff) throw new AppError('No estás disponible ese día', 409)
+        const held = await tx.rideBooking.aggregate({
+          where: { routeId: route.id, date: booking.date, status: { in: [...HOLD_STATUSES] } }, _sum: { seats: true },
         })
+        if ((held._sum.seats ?? 0) + booking.seats > (route.seatsOffered ?? 0)) throw new AppError('No quedan lugares suficientes', 409)
       }
-      return res.json({ ok: true, status: 'REJECTED' })
-    }
-
-    // Aprobar: revalidar capacidad de forma atómica.
-    const updated = await prisma.$transaction(async tx => {
-      const agg = await tx.rideBooking.aggregate({
-        where: { routeId: booking.route.id, date: booking.date, status: { in: [...HOLD_STATUSES] } },
-        _sum: { seats: true },
-      })
-      const held = agg._sum.seats ?? 0
-      const seatsOffered = booking.route.seatsOffered ?? 0
-      if (seatsOffered - held < booking.seats) {
-        throw new AppError('Ya no quedan lugares para aprobar esta solicitud', 409)
-      }
-      return tx.rideBooking.update({ where: { id: booking.id }, data: { status: 'APPROVED' } })
+      const status = action === 'approve' ? 'APPROVED' : 'REJECTED'
+      await tx.rideBooking.update({ where: { id: booking.id }, data: { status } })
+      return { booking, status }
     })
-
-    emitToUser(booking.passengerId, 'ride:status_changed', { bookingId: booking.id, status: 'APPROVED' })
-    if (booking.passenger.pushToken) {
-      await sendPushNotification({
-        to: booking.passenger.pushToken,
-        title: '¡Te aceptaron en el viaje!',
-        body: `Ya podés pagar tu lugar en ${booking.route.originCity} → ${booking.route.destinationCity}.`,
-        data: { bookingId: booking.id, type: 'ride_approved' },
-      })
-    }
-
-    res.json({ ok: true, status: updated.status })
-  } catch (err) {
-    next(err)
-  }
+    emitToUser(result.booking.passengerId, 'ride:status_changed', { bookingId: result.booking.id, status: result.status })
+    const passenger = await prisma.user.findUnique({ where: { id: result.booking.passengerId }, select: { pushToken: true } })
+    if (passenger?.pushToken) await sendPushNotification({
+      to: passenger.pushToken, title: 'Tu solicitud cambió de estado',
+      body: result.status === 'APPROVED' ? 'El conductor aceptó. Confirmá tu pago de prueba desde Mis viajes.' : 'El conductor rechazó la solicitud.',
+      data: { bookingId: result.booking.id, type: 'ride_status' },
+    })
+    res.json({ ok: true, status: result.status })
+  } catch (err) { next(err) }
 }
 
-// Pasajero cancela su solicitud (mientras no esté pagada).
 export async function cancelBooking(req: AuthRequest<BookingParams>, res: Response, next: NextFunction) {
   try {
-    const booking = await prisma.rideBooking.findUnique({
-      where: { id: req.params.id },
-      include: { route: { select: { driverId: true } } },
+    const booking = await serializable(async tx => {
+      const b = await tx.rideBooking.findFirst({ where: { id: req.params.id, passengerId: req.userId! }, include: { route: true, payment: true } })
+      if (!b) throw new AppError('Solicitud no encontrada', 404)
+      if (!['PENDING', 'APPROVED', 'PAID'].includes(b.status)) throw new AppError('Esta solicitud ya no se puede cancelar', 409)
+      if (b.payment) {
+        if (!b.payment.externalId?.startsWith('internal:')) throw new AppError('Este pago requiere revisión manual', 409)
+        await tx.payment.update({ where: { id: b.payment.id }, data: { status: 'REFUNDED' } })
+      }
+      await tx.rideBooking.update({ where: { id: b.id }, data: { status: 'CANCELLED' } })
+      if (b.travelRequestId) await tx.travelRequest.update({ where: { id: b.travelRequestId }, data: { status: 'CANCELLED', cancelledAt: new Date() } })
+      return b
     })
-    if (!booking) throw new AppError('Solicitud no encontrada', 404)
-    if (booking.passengerId !== req.userId) throw new AppError('No tenés permiso sobre esta solicitud', 403)
-    if (booking.status !== 'PENDING' && booking.status !== 'APPROVED') {
-      throw new AppError('Esta solicitud ya no se puede cancelar', 400)
-    }
-
-    await prisma.rideBooking.update({ where: { id: booking.id }, data: { status: 'CANCELLED' } })
     emitToUser(booking.route.driverId, 'ride:status_changed', { bookingId: booking.id, status: 'CANCELLED' })
     res.json({ ok: true })
-  } catch (err) {
-    next(err)
-  }
+  } catch (err) { next(err) }
 }

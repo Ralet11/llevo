@@ -33,7 +33,7 @@ export async function searchTrips(req: AuthRequest, res: Response, next: NextFun
       passengerId: req.userId!,
     })
 
-    if (!result.sameCity && result.options.length === 0) {
+    if (!result.sameCity) {
       const demoOption = await createDemoRideOption({ passengerId: req.userId!, originCity, destinationCity, date: new Date(date) })
       if (demoOption) result.options.push(demoOption)
     }

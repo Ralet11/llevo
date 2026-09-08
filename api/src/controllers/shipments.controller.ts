@@ -8,11 +8,22 @@ import { notifyNextCandidate, advanceQueue } from '../services/shipmentQueue'
 import { sendPushNotification } from '../services/notifications'
 import { emitToUser } from '../lib/socket'
 import { quoteShipment } from '../services/shipmentPricing'
+import { serializable } from '../lib/transaction'
+import { computeRoutePreview } from '../services/googleMaps'
 import { scheduleDemoShipmentAcceptance, shouldUseDemoShipmentBot } from '../services/demoShipmentBot'
 
 type ShipmentParams = { id: string }
 
 const SIZE_VALUES = ['SMALL', 'MEDIUM', 'LARGE', 'BULKY'] as const
+
+// Offers contain only dispatch information. Exact addresses and contacts become
+// available to the assigned driver through the authenticated job endpoints.
+const SAFE_OFFER_SELECT = {
+  id: true, originCity: true, destinationCity: true, weightKg: true,
+  packageSize: true, preferredDate: true, lastNotifiedAt: true,
+  candidateDriverIds: true,
+  sender: { select: { id: true, name: true, rating: true, ratingCount: true } },
+} as const
 
 const createShipmentSchema = z.object({
   originCity: z.string().min(1),
@@ -54,18 +65,20 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
     const data = createShipmentSchema.parse(req.body)
 
     const preferredDateObj = data.preferredDate ? new Date(data.preferredDate) : undefined
+    if (preferredDateObj && preferredDateObj.getTime() < Date.now()) throw new AppError('La fecha no puede estar en el pasado', 400)
+    // Stored pricing inputs are server-derived; client values are only estimates.
+    const route = await computeRoutePreview({ origin: { label: data.originAddress }, destination: { label: data.deliveryAddress } })
+    data.estimatedDistanceKm = Math.max(0.5, route.distanceMeters / 1000)
+    data.estimatedDurationMin = Math.max(5, Math.round(route.durationSeconds / 60))
+    if (route.origin.city) data.originCity = route.origin.city
+    if (route.destination.city) data.destinationCity = route.destination.city
 
-    const candidates = await findCandidateDrivers({
-      originCity: data.originCity,
-      destinationCity: data.destinationCity,
-      weightKg: data.weightKg,
-      preferredDate: preferredDateObj,
-      senderId: req.userId!,
+    const useDemoShipmentBot = await shouldUseDemoShipmentBot(req.userId!)
+    const candidates = useDemoShipmentBot ? [] : await findCandidateDrivers({
+      originCity: data.originCity, destinationCity: data.destinationCity,
+      weightKg: data.weightKg, preferredDate: preferredDateObj, senderId: req.userId!,
     })
-
     const candidateDriverIds = candidates.map(c => c.driverId)
-    const sender = await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } })
-    const useDemoShipmentBot = shouldUseDemoShipmentBot(req.userId!, sender?.email, candidateDriverIds.length)
     const status = candidateDriverIds.length === 0 && !useDemoShipmentBot ? 'NO_COVERAGE' : 'SEARCHING'
 
     const shipment = await prisma.shipment.create({
@@ -75,6 +88,7 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
         preferredDate: preferredDateObj,
         senderId: req.userId!,
         status,
+        isDemo: useDemoShipmentBot,
         candidateDriverIds,
       },
     })
@@ -94,7 +108,8 @@ export async function createShipment(req: AuthRequest, res: Response, next: Next
       )
     }
 
-    res.status(201).json({ shipment, candidatesFound: candidateDriverIds.length })
+    const { candidateDriverIds: _privateQueue, ...safeShipment } = shipment
+    res.status(201).json({ shipment: safeShipment, candidatesFound: candidateDriverIds.length })
   } catch (err) {
     next(err)
   }
@@ -119,7 +134,8 @@ export async function getShipmentById(req: AuthRequest<ShipmentParams>, res: Res
     if (!shipment) throw new AppError('Pedido no encontrado', 404)
     if (shipment.senderId !== req.userId) throw new AppError('No tenés permiso para ver este pedido', 403)
 
-    res.json({ shipment })
+    const { candidateDriverIds: _privateQueue, ...safeShipment } = shipment
+    res.json({ shipment: safeShipment })
   } catch (err) {
     next(err)
   }
@@ -168,7 +184,7 @@ export async function getMyShipments(req: AuthRequest, res: Response, next: Next
       take: 50,
     })
 
-    res.json({ shipments })
+    res.json({ shipments: shipments.map(({ candidateDriverIds: _privateQueue, ...shipment }) => shipment) })
   } catch (err) {
     next(err)
   }
@@ -183,7 +199,7 @@ export async function getPendingForDriver(req: AuthRequest, res: Response, next:
         candidateDriverIds: { has: req.userId! },
       },
       orderBy: { lastNotifiedAt: 'desc' },
-      include: { sender: { select: { id: true, name: true, rating: true, ratingCount: true } } },
+      select: SAFE_OFFER_SELECT,
     })
 
     // Solo mostrar si este conductor es el primero de la cola
@@ -191,7 +207,8 @@ export async function getPendingForDriver(req: AuthRequest, res: Response, next:
       return res.json({ shipment: null })
     }
 
-    res.json({ shipment })
+    const { candidateDriverIds: _privateQueue, ...safeShipment } = shipment
+    res.json({ shipment: safeShipment })
   } catch (err) {
     next(err)
   }
@@ -200,8 +217,10 @@ export async function getPendingForDriver(req: AuthRequest, res: Response, next:
 // Conductor consulta su trabajo activo
 export async function getActiveJobForDriver(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    const jobId = z.string().min(1).optional().parse(req.query.jobId)
     const job = await prisma.shipmentJob.findFirst({
-      where: { driverId: req.userId!, status: 'ACTIVE' },
+      where: { driverId: req.userId!, status: 'ACTIVE', ...(jobId ? { id: jobId } : {}) },
+      orderBy: { createdAt: 'asc' },
       include: {
         shipment: {
           select: {
@@ -291,126 +310,60 @@ export async function getJobById(req: AuthRequest<ShipmentParams>, res: Response
   }
 }
 
+async function changeInternalJob(req: AuthRequest, action: 'cancel' | 'pickup' | 'deliver') {
+  const jobId = z.string().min(1).parse(req.body.jobId)
+  return serializable(async tx => {
+    const job = await tx.shipmentJob.findFirst({
+      where: { id: jobId, driverId: req.userId! },
+      include: { payment: true, shipment: true },
+    })
+    if (!job) throw new AppError('Trabajo no encontrado', 404)
+    if (job.status !== 'ACTIVE') throw new AppError('El trabajo ya terminó o fue cancelado', 409)
+    if (action === 'cancel') {
+      if (job.pickedUpAt || job.shipment.status !== 'ASSIGNED') throw new AppError('No se puede cancelar después del retiro', 409)
+      if (job.payment && !job.payment.externalId?.startsWith('internal:')) throw new AppError('Este pago requiere revisión manual', 409)
+      await tx.shipmentJob.update({ where: { id: job.id }, data: { status: 'CANCELLED' } })
+      await tx.shipment.update({ where: { id: job.shipmentId }, data: { status: 'CANCELLED', candidateDriverIds: [] } })
+      if (job.payment) await tx.payment.update({ where: { id: job.payment.id }, data: { status: 'REFUNDED' } })
+      return { senderId: job.shipment.senderId, shipmentId: job.shipmentId, status: 'CANCELLED' }
+    }
+    if (job.payment?.status !== 'IN_ESCROW') throw new AppError('El remitente debe confirmar el pago de prueba antes del retiro', 409)
+    if (action === 'pickup') {
+      if (job.pickedUpAt || job.shipment.status !== 'ASSIGNED') throw new AppError('El paquete ya fue retirado o cambió de estado', 409)
+      await tx.shipmentJob.update({ where: { id: job.id }, data: { pickedUpAt: new Date() } })
+      await tx.shipment.update({ where: { id: job.shipmentId }, data: { status: 'PICKED_UP' } })
+      return { senderId: job.shipment.senderId, shipmentId: job.shipmentId, status: 'PICKED_UP' }
+    }
+    if (!job.pickedUpAt || job.shipment.status !== 'PICKED_UP') throw new AppError('Primero retirá el paquete', 409)
+    await tx.shipmentJob.update({ where: { id: job.id }, data: { deliveredAt: new Date(), status: 'COMPLETED' } })
+    await tx.shipment.update({ where: { id: job.shipmentId }, data: { status: 'DELIVERED' } })
+    await tx.payment.update({ where: { id: job.payment.id }, data: { status: 'RELEASED' } })
+    return { senderId: job.shipment.senderId, shipmentId: job.shipmentId, status: 'DELIVERED' }
+  })
+}
+
 export async function cancelActiveJob(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const job = await prisma.shipmentJob.findFirst({
-      where: { driverId: req.userId!, status: 'ACTIVE' },
-      include: { shipment: { select: { senderId: true } } },
-    })
-    if (!job) throw new AppError('No tenés un trabajo activo', 404)
-    if (job.pickedUpAt) throw new AppError('Ya retiraste el paquete, no podés cancelar el trabajo', 400)
-
-    await prisma.$transaction([
-      prisma.shipmentJob.update({
-        where: { id: job.id },
-        data: { status: 'CANCELLED' },
-      }),
-      prisma.shipment.update({
-        where: { id: job.shipmentId },
-        data: { status: 'SEARCHING', candidateDriverIds: [] },
-      }),
-    ])
-
-    emitToUser(job.shipment.senderId, 'shipment:status_changed', {
-      shipmentId: job.shipmentId,
-      status: 'SEARCHING',
-    })
-
+    const result = await changeInternalJob(req, 'cancel')
+    emitToUser(result.senderId, 'shipment:status_changed', result)
     res.json({ ok: true })
-  } catch (err) {
-    next(err)
-  }
+  } catch (err) { next(err) }
 }
 
 export async function markPickedUp(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const job = await prisma.shipmentJob.findFirst({
-      where: { driverId: req.userId!, status: 'ACTIVE' },
-      include: {
-        shipment: {
-          select: { senderId: true, destinationCity: true, sender: { select: { pushToken: true } } },
-        },
-      },
-    })
-    if (!job) throw new AppError('No tenés un trabajo activo', 404)
-    if (job.pickedUpAt) throw new AppError('Ya marcaste que retiraste el paquete', 400)
-
-    await prisma.$transaction([
-      prisma.shipmentJob.update({
-        where: { id: job.id },
-        data: { pickedUpAt: new Date() },
-      }),
-      prisma.shipment.update({
-        where: { id: job.shipmentId },
-        data: { status: 'PICKED_UP' },
-      }),
-    ])
-
-    emitToUser(job.shipment.senderId, 'shipment:status_changed', {
-      shipmentId: job.shipmentId,
-      status: 'PICKED_UP',
-    })
-
-    // Push ademas del socket: el socket solo llega si la app esta abierta y
-    // conectada, y el sender puede tener el telefono bloqueado en este momento.
-    if (job.shipment.sender.pushToken) {
-      await sendPushNotification({
-        to: job.shipment.sender.pushToken,
-        title: 'Retiraron tu paquete',
-        body: `Tu paquete a ${job.shipment.destinationCity} ya está en camino.`,
-        data: { shipmentId: job.shipmentId, type: 'shipment_picked_up' },
-      })
-    }
-
+    const result = await changeInternalJob(req, 'pickup')
+    emitToUser(result.senderId, 'shipment:status_changed', result)
     res.json({ ok: true })
-  } catch (err) {
-    next(err)
-  }
+  } catch (err) { next(err) }
 }
 
 export async function markDelivered(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const job = await prisma.shipmentJob.findFirst({
-      where: { driverId: req.userId!, status: 'ACTIVE' },
-      include: {
-        shipment: {
-          select: { senderId: true, destinationCity: true, sender: { select: { pushToken: true } } },
-        },
-      },
-    })
-    if (!job) throw new AppError('No tenés un trabajo activo', 404)
-    if (!job.pickedUpAt) throw new AppError('Primero marcá que retiraste el paquete', 400)
-    if (job.deliveredAt) throw new AppError('Ya marcaste que entregaste el paquete', 400)
-
-    await prisma.$transaction([
-      prisma.shipmentJob.update({
-        where: { id: job.id },
-        data: { deliveredAt: new Date(), status: 'COMPLETED' },
-      }),
-      prisma.shipment.update({
-        where: { id: job.shipmentId },
-        data: { status: 'DELIVERED' },
-      }),
-    ])
-
-    emitToUser(job.shipment.senderId, 'shipment:status_changed', {
-      shipmentId: job.shipmentId,
-      status: 'DELIVERED',
-    })
-
-    if (job.shipment.sender.pushToken) {
-      await sendPushNotification({
-        to: job.shipment.sender.pushToken,
-        title: '¡Paquete entregado!',
-        body: `Tu paquete a ${job.shipment.destinationCity} llegó a destino.`,
-        data: { shipmentId: job.shipmentId, type: 'shipment_delivered' },
-      })
-    }
-
+    const result = await changeInternalJob(req, 'deliver')
+    emitToUser(result.senderId, 'shipment:status_changed', result)
     res.json({ ok: true })
-  } catch (err) {
-    next(err)
-  }
+  } catch (err) { next(err) }
 }
 
 // Conductor ve sus envíos programados para fechas futuras
@@ -424,11 +377,13 @@ export async function getUpcomingForDriver(req: AuthRequest, res: Response, next
         preferredDate: { gt: now },
       },
       orderBy: { preferredDate: 'asc' },
+      select: SAFE_OFFER_SELECT,
     })
     // Only expose shipments where this driver is first in queue
     const filtered = shipments
       .filter(s => s.candidateDriverIds[0] === req.userId)
       .slice(0, 20)
+      .map(({ candidateDriverIds: _privateQueue, ...shipment }) => shipment)
     res.json({ shipments: filtered })
   } catch (err) {
     next(err)
@@ -501,7 +456,7 @@ export async function getAgendaForDriver(req: AuthRequest, res: Response, next: 
           candidateDriverIds: { has: req.userId! },
         },
         orderBy: { preferredDate: 'asc' },
-        include: { sender: { select: { id: true, name: true, rating: true, ratingCount: true } } },
+        select: SAFE_OFFER_SELECT,
       }),
       prisma.shipmentJob.findMany({
         where: {
@@ -514,12 +469,15 @@ export async function getAgendaForDriver(req: AuthRequest, res: Response, next: 
 
     const offerItems = offers
       .filter(s => s.candidateDriverIds[0] === req.userId && inRange(s.preferredDate))
-      .map(shipment => ({
-        kind: 'OFFER' as const,
-        date: effectiveDate(shipment.preferredDate).toISOString(),
-        isLocal: isLocalShipmentByCities(shipment),
-        shipment,
-      }))
+      .map(shipment => {
+        const { candidateDriverIds: _privateQueue, ...safeShipment } = shipment
+        return {
+          kind: 'OFFER' as const,
+          date: effectiveDate(shipment.preferredDate).toISOString(),
+          isLocal: isLocalShipmentByCities(shipment),
+          shipment: safeShipment,
+        }
+      })
 
     const jobItems = jobs
       .filter(j => inRange(j.shipment.preferredDate))
@@ -576,7 +534,7 @@ export async function respondToShipment(req: AuthRequest<ShipmentParams>, res: R
         weightKg: shipment.weightKg,
         packageSize: shipment.packageSize,
       })
-      const job = await prisma.$transaction(async tx => {
+      const job = await serializable(async tx => {
         const claimed = await tx.shipment.updateMany({
           where: { id: shipment.id, status: 'SEARCHING' },
           data: { status: 'ASSIGNED' },
@@ -629,7 +587,7 @@ export async function respondToShipment(req: AuthRequest<ShipmentParams>, res: R
 
       res.json({ job })
     } else {
-      await advanceQueue(shipment.id)
+      await advanceQueue(shipment.id, req.userId!)
       res.json({ message: 'Pedido rechazado' })
     }
   } catch (err) {

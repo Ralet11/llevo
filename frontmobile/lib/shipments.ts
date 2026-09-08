@@ -19,6 +19,7 @@ export type MyShipment = {
   weightKg: number
   packageSize: PackageSize
   recipientDetails: string
+  isDemo: boolean
   status: ShipmentStatus
   preferredDate: string | null
   createdAt: string
@@ -40,7 +41,7 @@ export function cancelShipment(token: string, shipmentId: string) {
 }
 
 export function createShipmentCheckout(token: string, shipmentJobId: string) {
-  return api.post<{ checkoutUrl: string; paymentId: string }>(`/payments/shipment-jobs/${shipmentJobId}/checkout`, {}, token)
+  return api.post<{ checkoutUrl: string | null; simulated: boolean; paymentId: string }>(`/payments/shipment-jobs/${shipmentJobId}/checkout`, {}, token)
 }
 
 export function isActiveShipmentStatus(status: ShipmentStatus) {

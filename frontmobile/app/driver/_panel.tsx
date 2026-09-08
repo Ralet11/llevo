@@ -15,10 +15,10 @@ export type Shipment = {
   destinationCity: string
   weightKg: number
   packageSize: string
-  pickupContactName: string
-  pickupContactPhone: string
-  recipientDetails: string
-  notes: string | null
+  pickupContactName?: string
+  pickupContactPhone?: string
+  recipientDetails?: string
+  notes?: string | null
   preferredDate: string | null
   lastNotifiedAt: string | null
   sender?: ShipmentSender | null
@@ -30,10 +30,10 @@ export type UpcomingShipment = {
   destinationCity: string
   weightKg: number
   packageSize: string
-  pickupContactName: string
-  pickupContactPhone: string
-  recipientDetails: string
-  notes: string | null
+  pickupContactName?: string
+  pickupContactPhone?: string
+  recipientDetails?: string
+  notes?: string | null
   preferredDate: string
   sender?: ShipmentSender | null
 }
@@ -250,8 +250,7 @@ export function UpcomingShipmentCard({ shipment, responding, onAccept, onReject 
       <View style={styles.offerDetails}>
         <DetailRow icon="scale-outline" label="Peso" value={`${shipment.weightKg} kg`} />
         <DetailRow icon="cube-outline" label="Tamaño" value={PACKAGE_SIZE_LABELS[shipment.packageSize] ?? shipment.packageSize} />
-        <DetailRow icon="call-outline" label="Contacto en origen" value={`${shipment.pickupContactName} · ${shipment.pickupContactPhone}`} />
-        <DetailRow icon="person-outline" label="Receptor" value={shipment.recipientDetails} />
+        <DetailRow icon="lock-closed-outline" label="Datos de contacto" value="Disponibles después de aceptar" />
         {shipment.notes ? <DetailRow icon="document-text-outline" label="Notas" value={shipment.notes} /> : null}
       </View>
 
@@ -310,8 +309,7 @@ export function ShipmentOfferCard({ shipment, responding, error, onAccept, onRej
       <View style={styles.offerDetails}>
         <DetailRow icon="scale-outline" label="Peso" value={`${shipment.weightKg} kg`} />
         <DetailRow icon="cube-outline" label="Tamaño" value={PACKAGE_SIZE_LABELS[shipment.packageSize] ?? shipment.packageSize} />
-        <DetailRow icon="call-outline" label="Contacto en origen" value={`${shipment.pickupContactName} · ${shipment.pickupContactPhone}`} />
-        <DetailRow icon="person-outline" label="Receptor" value={shipment.recipientDetails} />
+        <DetailRow icon="lock-closed-outline" label="Datos de contacto" value="Disponibles después de aceptar" />
         {shipment.preferredDate ? (
           <DetailRow icon="calendar-outline" label="Fecha preferida" value={new Date(shipment.preferredDate).toLocaleDateString('es-AR')} />
         ) : null}

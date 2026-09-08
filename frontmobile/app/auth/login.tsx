@@ -18,7 +18,7 @@ type EmailStep = 'email' | 'password' | 'code' | 'setPassword'
 
 export default function LoginScreen() {
   const { login, sendPhoneCode, loginWithPhone, startEmailAuth, verifyEmailCode, setEmailPassword } = useAuth()
-  const [method, setMethod] = useState<LoginMethod>('phone')
+  const [method, setMethod] = useState<LoginMethod>('email')
   const [country, setCountry] = useState<Country>(() => findCountry(DEFAULT_COUNTRY_ISO2) ?? COUNTRIES[0])
   const [nationalPhone, setNationalPhone] = useState('')
   const [code, setCode] = useState('')

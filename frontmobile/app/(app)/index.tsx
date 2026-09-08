@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppDrawer } from '../../components/app/AppDrawer'
 import { HomeDashboard } from '../../components/app/home/HomeDashboard'
 import { IconButton } from '../../components/ui/IconButton'
+import { Button } from '../../components/ui/Button'
 import { darkMapStyle } from '../../constants/mapStyle'
 import { Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
@@ -615,6 +616,7 @@ export default function AppHomeScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [deliveryFormError, setDeliveryFormError] = useState<string | null>(null)
   const [shipmentQuote, setShipmentQuote] = useState<ShipmentQuote | null>(null)
+  const [pickupPhone, setPickupPhone] = useState('')
   const [deliveryWizardStep, setDeliveryWizardStep] = useState<DeliveryWizardStep>('route')
   const [deliveryRequestStatus, setDeliveryRequestStatus] = useState<DeliveryRequestStatus>('idle')
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null)
@@ -797,6 +799,8 @@ export default function AppHomeScreen() {
         setDeliveryRequestStatus('delivered')
       } else if (data.status === 'NO_COVERAGE') {
         setDeliveryRequestStatus('no_coverage')
+      } else if (data.status === 'CANCELLED') {
+        router.replace({ pathname: '/shipment/[id]', params: { id: currentShipmentId! } })
       }
     }
 
@@ -843,6 +847,8 @@ export default function AppHomeScreen() {
           setDeliveryRequestStatus('delivered')
         } else if (data.shipment.status === 'NO_COVERAGE') {
           setDeliveryRequestStatus('no_coverage')
+        } else if (data.shipment.status === 'CANCELLED') {
+          router.replace({ pathname: '/shipment/[id]', params: { id: currentShipmentId! } })
         }
       } catch {
         // falla silenciosamente, reintenta en el próximo ciclo
@@ -1220,13 +1226,13 @@ export default function AppHomeScreen() {
     const nextStep = DELIVERY_WIZARD_STEPS[currentIndex + 1]?.id
 
     if (!nextStep) {
-      if (validateSenderPhone(user?.phone)) {
+      if (validateSenderPhone(pickupPhone || user?.phone)) {
         Alert.alert(
           'Falta tu telefono',
-          'Necesitamos un telefono verificado para que el conductor pueda coordinar el retiro.',
+          'Necesitamos un teléfono de contacto para coordinar el retiro.',
           [
             { text: 'Ahora no', style: 'cancel' },
-            { text: 'Verificar telefono', onPress: () => router.push('/verify-phone') },
+            { text: 'Completar teléfono', onPress: () => setDeliveryFormError('Ingresá el teléfono de retiro en este paso.') },
           ]
         )
         return
@@ -1290,6 +1296,7 @@ export default function AppHomeScreen() {
   async function submitShipmentToAPI(nextResult: SearchResult) {
     if (!token) return
     try {
+      if ((pickupPhone || user?.phone || '').trim().length < 6) throw new Error('Ingresá un teléfono de contacto para el retiro.')
       const weightKg = parseFloat(deliveryDraft.estimatedWeight.trim().replace(',', '.'))
       const data = await api.post<{ shipment: { id: string; status: string } }>('/shipments', {
         originCity: nextResult.originCity ?? extractCity(nextResult.originLabel),
@@ -1301,7 +1308,7 @@ export default function AppHomeScreen() {
         estimatedDistanceKm: Math.max(0.5, nextResult.distanceMeters / 1000),
         estimatedDurationMin: Math.max(5, Math.round(nextResult.durationSeconds / 60)),
         pickupContactName: user?.name ?? '',
-        pickupContactPhone: user?.phone ?? '',
+        pickupContactPhone: (pickupPhone || user?.phone || '').trim(),
         recipientDetails: deliveryDraft.deliveryDetails,
         notes: deliveryDraft.notes || undefined,
         // Noon ART (UTC-3) on the selected date → 15:00 UTC
@@ -1828,6 +1835,7 @@ export default function AppHomeScreen() {
 
                   {deliveryRequestStatus === 'accepted' && (
                     <View style={[styles.trackingPanel, styles.trackingPanelAccepted]}>
+                      <Button label="Ver detalle y confirmar pago de prueba" onPress={() => { if (currentShipmentId) router.push({ pathname: '/shipment/[id]', params: { id: currentShipmentId } }) }} />
                       <View style={styles.trackingPanelHeader}>
                         <TouchableOpacity
                           style={styles.trackingDriverTap}
@@ -2394,6 +2402,20 @@ export default function AppHomeScreen() {
                         </View>
 
                         <View style={styles.deliveryFieldStack}>
+                          <View style={styles.deliveryFieldCard}>
+                            <Text style={styles.deliveryFieldLabel}>Teléfono para el retiro *</Text>
+                            <TextInput
+                              value={pickupPhone || user?.phone || ''}
+                              onChangeText={setPickupPhone}
+                              placeholder="Ej. +54 9 11 5555 5555"
+                              placeholderTextColor={colors.textMuted}
+                              keyboardType="phone-pad"
+                              selectionColor={colors.lime}
+                              style={styles.deliveryFieldInput}
+                            />
+                            <Text style={styles.deliveryFieldHint}>Se comparte con el conductor únicamente después de aceptar el envío.</Text>
+                          </View>
+
                           <View style={styles.deliveryFieldCard}>
                             <Text style={styles.deliveryFieldLabel}>Fecha de envío (opcional)</Text>
                             <TouchableOpacity

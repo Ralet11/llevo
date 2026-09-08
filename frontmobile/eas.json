@@ -28,6 +28,7 @@
         "buildType": "apk"
       },
       "env": {
+        "EXPO_PUBLIC_SKIP_DRIVER_VERIFICATION": "true",
         "EXPO_PUBLIC_API_URL": "https://llevo.duckdns.org/api/v1",
         "EXPO_PUBLIC_DEFAULT_MAP_LAT": "-34.6037",
         "EXPO_PUBLIC_DEFAULT_MAP_LNG": "-58.3816",

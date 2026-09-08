@@ -17,6 +17,7 @@ export default function HistoryScreen() {
   const styles = createStyles(colors)
   const [shipments, setShipments] = useState<MyShipment[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useFocusEffect(
     useCallback(() => {
@@ -24,11 +25,12 @@ export default function HistoryScreen() {
       if (!token) return
 
       setLoading(true)
+      setError(null)
       fetchMyShipments(token)
         .then(result => {
           if (!cancelled) setShipments(result)
         })
-        .catch(() => {})
+        .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'No se pudieron cargar los envíos') })
         .finally(() => {
           if (!cancelled) setLoading(false)
         })
@@ -51,6 +53,8 @@ export default function HistoryScreen() {
         <View style={styles.centered}>
           <ActivityIndicator color={colors.lime} />
         </View>
+      ) : error ? (
+        <Text accessibilityRole="alert" style={{ color: colors.danger, padding: 24 }}>{error}</Text>
       ) : shipments.length === 0 ? (
         <View style={styles.centered}>
           <Ionicons name="time-outline" size={32} color={colors.textMuted} />

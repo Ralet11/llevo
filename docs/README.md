@@ -2,6 +2,8 @@
 
 Este directorio es la fuente de verdad de producto y técnica. La documentación describe el comportamiento esperado; el código que todavía no lo implemente se marca explícitamente como pendiente.
 
+La entrega actual está acotada al [MVP de pruebas internas](./internal-testing.md). Ese documento prevalece sobre las descripciones anteriores de pagos externos y demanda de viajes, que quedan fuera de esta versión.
+
 | Documento | Propósito |
 | --- | --- |
 | [Producto y arquitectura](./product-and-architecture.md) | Qué resuelve LLEVO, actores, flujos, modelo de dominio, arquitectura y operación. |

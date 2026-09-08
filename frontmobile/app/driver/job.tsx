@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { router, useFocusEffect } from 'expo-router'
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Platform, StatusBar as RNStatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
@@ -107,6 +107,7 @@ function ManeuverBanner({ rerouting, step, distanceToNextManeuverMeters }: {
 }
 
 export default function DriverJobScreen() {
+  const { jobId: selectedJobId } = useLocalSearchParams<{ jobId?: string }>()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0)
@@ -167,7 +168,7 @@ export default function DriverJobScreen() {
     setLoading(true)
     try {
       const [data, locationResult] = await Promise.all([
-        api.get<{ job: ActiveJob | null }>('/shipments/active-job', token),
+        api.get<{ job: ActiveJob | null }>(`/shipments/active-job${selectedJobId ? '?jobId=' + encodeURIComponent(selectedJobId) : ''}`, token),
         getInitialMapRegion().catch(() => null),
       ])
       const loc = locationResult?.source === 'device'
@@ -413,7 +414,7 @@ export default function DriverJobScreen() {
     setActionLoading(true)
     setActionError(null)
     try {
-      await api.post('/shipments/active-job/pickup', {}, token)
+      await api.post('/shipments/active-job/pickup', { jobId: job.id }, token)
       const updatedJob = { ...job, pickedUpAt: new Date().toISOString() }
       jobRef.current = updatedJob
       setJob(updatedJob)
@@ -429,7 +430,7 @@ export default function DriverJobScreen() {
   function handleCancelPress() {
     Alert.alert(
       'Cancelar trabajo',
-      '¿Seguro que querés cancelar? Solo podés hacerlo antes de retirar el paquete. El pedido vuelve a estar disponible.',
+      'El pedido se cancelará para ambas partes. Si hubo un pago simulado, se anulará. El remitente podrá crear un nuevo pedido.',
       [
         { text: 'No, seguir', style: 'cancel' },
         { text: 'Sí, cancelar', style: 'destructive', onPress: () => void handleCancel() },
@@ -442,7 +443,7 @@ export default function DriverJobScreen() {
     setActionLoading(true)
     setActionError(null)
     try {
-      await api.post('/shipments/active-job/cancel', {}, token)
+      await api.post('/shipments/active-job/cancel', { jobId: job?.id }, token)
       router.replace('/driver/home')
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Error al cancelar. Intentá de nuevo.')
@@ -456,7 +457,7 @@ export default function DriverJobScreen() {
     setActionLoading(true)
     setActionError(null)
     try {
-      await api.post('/shipments/active-job/deliver', {}, token)
+      await api.post('/shipments/active-job/deliver', { jobId: job?.id }, token)
       router.replace('/driver/home')
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Error. Intentá de nuevo.')

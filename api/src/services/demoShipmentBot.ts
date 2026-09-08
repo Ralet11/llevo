@@ -2,8 +2,9 @@ import prisma from '../lib/prisma'
 import { emitToUser } from '../lib/socket'
 import { sendPushNotification } from './notifications'
 import { quoteShipment } from './shipmentPricing'
+import { internalBotsAvailable, testerWantsBot } from './internalBots'
 
-const DEMO_DRIVER_EMAIL = 'demo-shipment-driver@llevo.invalid'
+export const DEMO_SHIPMENT_BOT_EMAIL = 'demo-shipment-driver@llevo.invalid'
 const DEMO_DRIVER_NAME = 'Conductor de prueba'
 const DAYS_OF_WEEK = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'] as const
 
@@ -13,17 +14,9 @@ const deliveryTimers = new Map<string, NodeJS.Timeout>()
 
 type DemoBotConfig = {
   enabled: boolean
-  allowAllUsers: boolean
-  skipPayment: boolean
-  allowedEmails: Set<string>
-  allowedUserIds: Set<string>
   acceptDelayMs: number
   pickupDelayMs: number
   deliveryDelayMs: number
-}
-
-function enabled(value?: string) {
-  return value?.trim().toLowerCase() === 'true'
 }
 
 function delay(name: string, fallback: number) {
@@ -33,43 +26,21 @@ function delay(name: string, fallback: number) {
 
 function getConfig(): DemoBotConfig {
   return {
-    enabled: enabled(process.env.DEMO_SHIPMENT_BOT_ENABLED),
-    allowAllUsers: enabled(process.env.DEMO_SHIPMENT_BOT_ALLOW_ALL_USERS),
-    skipPayment: enabled(process.env.DEMO_SHIPMENT_BOT_SKIP_PAYMENT),
-    allowedEmails: new Set(
-      (process.env.DEMO_SHIPMENT_BOT_ALLOWED_EMAILS ?? '')
-        .split(',')
-        .map(email => email.trim().toLowerCase())
-        .filter(Boolean)
-    ),
-    allowedUserIds: new Set(
-      (process.env.DEMO_SHIPMENT_BOT_ALLOWED_USER_IDS ?? '')
-        .split(',')
-        .map(id => id.trim())
-        .filter(Boolean)
-    ),
+    enabled: internalBotsAvailable(),
     acceptDelayMs: delay('DEMO_SHIPMENT_BOT_ACCEPT_DELAY_MS', 8_000),
     pickupDelayMs: delay('DEMO_SHIPMENT_BOT_PICKUP_DELAY_MS', 25_000),
     deliveryDelayMs: delay('DEMO_SHIPMENT_BOT_DELIVERY_DELAY_MS', 45_000),
   }
 }
 
-function isAllowedTester(userId: string, email: string | null | undefined, config = getConfig()) {
-  return config.enabled && (
-    config.allowAllUsers ||
-    config.allowedUserIds.has(userId) ||
-    (!!email && config.allowedEmails.has(email.trim().toLowerCase()))
-  )
-}
-
 // Solo se usa durante demostraciones controladas. Nunca marca un pago como
 // aprobado: simplemente permite que el conductor ficticio recorra el flujo.
-function canAdvanceLifecycle(paymentStatus: string | undefined, config: DemoBotConfig) {
-  return config.skipPayment || paymentStatus === 'IN_ESCROW'
+function canAdvanceLifecycle(paymentStatus: string | undefined) {
+  return paymentStatus === 'IN_ESCROW'
 }
 
-export function shouldUseDemoShipmentBot(userId: string, email: string | null | undefined, realCandidateCount: number) {
-  return realCandidateCount === 0 && isAllowedTester(userId, email)
+export function shouldUseDemoShipmentBot(userId: string) {
+  return testerWantsBot(userId, 'shipment')
 }
 
 function isLocal(originCity: string, destinationCity: string) {
@@ -101,7 +72,7 @@ async function acceptWithDemoDriver(shipmentId: string) {
     where: { id: shipmentId },
     include: { sender: { select: { email: true, pushToken: true } } },
   })
-  if (!shipment || shipment.status !== 'SEARCHING' || shipment.candidateDriverIds.length > 0 || !isAllowedTester(shipment.senderId, shipment.sender.email, config)) {
+  if (!shipment || !shipment.isDemo || shipment.status !== 'SEARCHING' || shipment.candidateDriverIds.length > 0) {
     return false
   }
 
@@ -120,17 +91,18 @@ async function acceptWithDemoDriver(shipmentId: string) {
     if (claimed.count === 0) return null
 
     const driver = await tx.user.upsert({
-      where: { email: DEMO_DRIVER_EMAIL },
+      where: { email: DEMO_SHIPMENT_BOT_EMAIL },
       create: {
-        email: DEMO_DRIVER_EMAIL,
+        email: DEMO_SHIPMENT_BOT_EMAIL,
         name: DEMO_DRIVER_NAME,
+        isDemoBot: true,
         isVerified: true,
         driverVerificationStatus: 'APPROVED',
         driverVerifiedAt: new Date(),
         rating: 5,
         ratingCount: 1,
       },
-      update: { name: DEMO_DRIVER_NAME, isActive: true },
+      update: { name: DEMO_DRIVER_NAME, isDemoBot: true, isActive: true },
     })
     const route = await tx.driverRoute.create({
       data: {
@@ -172,14 +144,11 @@ async function acceptWithDemoDriver(shipmentId: string) {
     await sendPushNotification({
       to: shipment.sender.pushToken,
       title: 'Conductor de prueba asignado',
-      body: config.skipPayment
-        ? 'Tu envío de demostración iniciará automáticamente en unos segundos.'
-        : 'Tu envío de demostración está listo para continuar con el pago de prueba.',
+      body: 'Tu envío de demostración está listo para continuar con el pago de prueba.',
       data: { shipmentId: shipment.id, type: 'shipment_accepted', demo: 'true' },
     })
   }
   console.log(`[demo-shipment-bot] Envío demo asignado: ${shipment.id}`)
-  if (config.skipPayment) scheduleDemoShipmentLifecycle(accepted.job.id)
   return true
 }
 
@@ -187,7 +156,7 @@ export function scheduleDemoShipmentLifecycle(jobId: string) {
   const config = getConfig()
   if (!config.enabled) return
   schedule(pickupTimers, jobId, config.pickupDelayMs, async () => {
-    if (await markDemoShipmentPickedUp(jobId)) scheduleDemoShipmentDelivery(jobId)
+    if (await runDemoShipmentPickup(jobId)) scheduleDemoShipmentDelivery(jobId)
   })
 }
 
@@ -195,7 +164,7 @@ function scheduleDemoShipmentDelivery(jobId: string) {
   const config = getConfig()
   if (!config.enabled) return
   schedule(deliveryTimers, jobId, config.deliveryDelayMs, async () => {
-    await markDemoShipmentDelivered(jobId)
+    await runDemoShipmentDelivery(jobId)
   })
 }
 
@@ -204,16 +173,16 @@ async function getDemoJob(jobId: string) {
     where: { id: jobId },
     include: {
       driver: { select: { email: true } },
-      payment: { select: { status: true } },
+      payment: { select: { id: true, status: true } },
       shipment: { include: { sender: { select: { pushToken: true } } } },
     },
   })
 }
 
-async function markDemoShipmentPickedUp(jobId: string) {
+export async function runDemoShipmentPickup(jobId: string) {
+  if (!internalBotsAvailable()) return false
   const job = await getDemoJob(jobId)
-  const config = getConfig()
-  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || !canAdvanceLifecycle(job.payment?.status, config) || job.shipment.status !== 'ASSIGNED' || job.pickedUpAt) return false
+  if (!job || job.driver.email !== DEMO_SHIPMENT_BOT_EMAIL || !canAdvanceLifecycle(job.payment?.status) || job.shipment.status !== 'ASSIGNED' || job.pickedUpAt) return false
 
   const updated = await prisma.$transaction(async tx => {
     const moved = await tx.shipment.updateMany({ where: { id: job.shipmentId, status: 'ASSIGNED' }, data: { status: 'PICKED_UP' } })
@@ -235,15 +204,16 @@ async function markDemoShipmentPickedUp(jobId: string) {
   return true
 }
 
-async function markDemoShipmentDelivered(jobId: string) {
+export async function runDemoShipmentDelivery(jobId: string) {
+  if (!internalBotsAvailable()) return false
   const job = await getDemoJob(jobId)
-  const config = getConfig()
-  if (!job || job.driver.email !== DEMO_DRIVER_EMAIL || !canAdvanceLifecycle(job.payment?.status, config) || job.shipment.status !== 'PICKED_UP' || job.deliveredAt) return false
+  if (!job || job.driver.email !== DEMO_SHIPMENT_BOT_EMAIL || !canAdvanceLifecycle(job.payment?.status) || job.shipment.status !== 'PICKED_UP' || job.deliveredAt) return false
 
   const updated = await prisma.$transaction(async tx => {
     const moved = await tx.shipment.updateMany({ where: { id: job.shipmentId, status: 'PICKED_UP' }, data: { status: 'DELIVERED' } })
     if (moved.count === 0) return false
     await tx.shipmentJob.update({ where: { id: job.id }, data: { deliveredAt: new Date(), status: 'COMPLETED' } })
+    if (job.payment) await tx.payment.update({ where: { id: job.payment.id }, data: { status: 'RELEASED' } })
     return true
   })
   if (!updated) return false
@@ -265,24 +235,22 @@ export async function reconcileDemoShipmentBot() {
   if (!config.enabled) return
 
   const waiting = await prisma.shipment.findMany({
-    where: { status: 'SEARCHING', candidateDriverIds: { isEmpty: true } },
-    include: { sender: { select: { email: true } } },
+    where: { isDemo: true, status: 'SEARCHING', candidateDriverIds: { isEmpty: true } },
+    select: { id: true },
     take: 100,
   })
-  for (const shipment of waiting) {
-    if (isAllowedTester(shipment.senderId, shipment.sender.email, config)) scheduleDemoShipmentAcceptance(shipment.id)
-  }
+  for (const shipment of waiting) scheduleDemoShipmentAcceptance(shipment.id)
 
   const demoJobs = await prisma.shipmentJob.findMany({
     where: {
       status: 'ACTIVE',
-      driver: { email: DEMO_DRIVER_EMAIL },
+      driver: { email: DEMO_SHIPMENT_BOT_EMAIL },
     },
     include: { shipment: { select: { status: true } }, payment: { select: { status: true } } },
     take: 100,
   })
   for (const job of demoJobs) {
-    if (!canAdvanceLifecycle(job.payment?.status, config)) continue
+    if (!canAdvanceLifecycle(job.payment?.status)) continue
     if (job.shipment.status === 'ASSIGNED') scheduleDemoShipmentLifecycle(job.id)
     if (job.shipment.status === 'PICKED_UP') scheduleDemoShipmentDelivery(job.id)
   }

@@ -2,6 +2,8 @@ import { Response, NextFunction } from 'express'
 import { z } from 'zod'
 import prisma from '../lib/prisma'
 import { AuthRequest } from '../middleware/authenticate'
+import { AppError } from '../middleware/errorHandler'
+import { serializable } from '../lib/transaction'
 
 // Clave local YYYY-MM-DD (no UTC, para no correr el dia en timezones negativos).
 function dayKey(d: Date): string {
@@ -108,10 +110,15 @@ export async function getMyDaysOff(req: AuthRequest, res: Response, next: NextFu
 export async function addDayOff(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const date = dateKeySchema.parse(req.body.date)
-    await prisma.driverDayOff.upsert({
+    await serializable(async tx => {
+    const commitments = await tx.rideBooking.count({ where: { route: { driverId: req.userId! }, date, status: { in: ['PENDING', 'APPROVED', 'PAID'] } } })
+    const jobs = await tx.shipmentJob.count({ where: { driverId: req.userId!, status: 'ACTIVE' } })
+    if (commitments || jobs) throw new AppError('Tenés compromisos activos. Resolvelos antes de marcarte no disponible.', 409)
+    await tx.driverDayOff.upsert({
       where: { driverId_date: { driverId: req.userId!, date } },
       create: { driverId: req.userId!, date },
       update: {},
+    })
     })
     res.json({ ok: true })
   } catch (err) {

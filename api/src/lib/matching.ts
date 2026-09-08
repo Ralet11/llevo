@@ -1,5 +1,4 @@
 import prisma from './prisma'
-import { DEMO_RIDE_BOT_EMAIL } from '../services/demoRideBot'
 
 type MatchParams = {
   originCity: string
@@ -42,6 +41,7 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
   const routes = await prisma.driverRoute.findMany({
     where: {
       isActive: true,
+      driver: { isActive: true, isDemoBot: false, driverVerificationStatus: 'APPROVED' },
       maxWeightKg: { gte: params.weightKg },
       // isActive en una ruta LOCAL significa "online" (presencia en tiempo real).
       kind: isLocalShipment ? 'LOCAL' : 'INTERCITY',
@@ -165,9 +165,9 @@ export async function findPassengerTrips(params: PassengerSearchParams): Promise
   const routes = await prisma.driverRoute.findMany({
     where: {
       isActive: true,
+      driver: { isActive: true, isDemoBot: false, driverVerificationStatus: 'APPROVED' },
       kind: 'INTERCITY',
       carriesPassengers: true,
-      driver: { email: { not: DEMO_RIDE_BOT_EMAIL } },
       ...(params.passengerId ? { driverId: { not: params.passengerId } } : {}),
     },
     include: {

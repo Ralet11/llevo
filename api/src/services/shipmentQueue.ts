@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma'
 import { emitToUser } from '../lib/socket'
 import { sendPushNotification } from './notifications'
+import { serializable } from '../lib/transaction'
 
 const OFFER_TIMEOUT_MS = 15 * 60 * 1000
 
@@ -13,10 +14,11 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
   if (!shipment || shipment.status !== 'SEARCHING') return
 
   if (shipment.candidateDriverIds.length === 0) {
-    await prisma.shipment.update({
-      where: { id: shipmentId },
+    const claimed = await prisma.shipment.updateMany({
+      where: { id: shipmentId, status: 'SEARCHING', candidateDriverIds: { equals: [] } },
       data: { status: 'NO_COVERAGE' },
     })
+    if (!claimed.count) return
 
     emitToUser(shipment.senderId, 'shipment:status_changed', {
       shipmentId,
@@ -40,10 +42,11 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
     select: { pushToken: true },
   })
 
-  await prisma.shipment.update({
-    where: { id: shipmentId },
+  const claimed = await prisma.shipment.updateMany({
+    where: { id: shipmentId, status: 'SEARCHING', candidateDriverIds: { equals: shipment.candidateDriverIds }, lastNotifiedAt: shipment.lastNotifiedAt },
     data: { lastNotifiedAt: new Date() },
   })
+  if (!claimed.count) return
 
   // Socket: el conductor recibe la oferta en tiempo real
   emitToUser(nextDriverId, 'shipment:new_offer', {
@@ -52,17 +55,10 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
       id: shipment.id,
       originCity: shipment.originCity,
       destinationCity: shipment.destinationCity,
-      originAddress: shipment.originAddress,
-      deliveryAddress: shipment.deliveryAddress,
       weightKg: shipment.weightKg,
       packageSize: shipment.packageSize,
       preferredDate: shipment.preferredDate,
-      pickupContactName: shipment.pickupContactName,
-      pickupContactPhone: shipment.pickupContactPhone,
-      recipientDetails: shipment.recipientDetails,
-      notes: shipment.notes,
       status: shipment.status,
-      candidateDriverIds: shipment.candidateDriverIds,
     },
   })
 
@@ -76,18 +72,18 @@ export async function notifyNextCandidate(shipmentId: string): Promise<void> {
   }
 }
 
-export async function advanceQueue(shipmentId: string): Promise<void> {
+export async function advanceQueue(shipmentId: string, expectedDriverId?: string): Promise<void> {
   // Use a transaction to atomically read + pop the first candidate, preventing
   // duplicate advances if two concurrent rejects or timeouts race each other
-  const updated = await prisma.$transaction(async tx => {
+  const updated = await serializable(async tx => {
     const s = await tx.shipment.findUnique({
       where: { id: shipmentId },
       select: { status: true, candidateDriverIds: true },
     })
-    if (!s || s.status !== 'SEARCHING') return null
+    if (!s || s.status !== 'SEARCHING' || (expectedDriverId && s.candidateDriverIds[0] !== expectedDriverId)) return null
     return tx.shipment.update({
       where: { id: shipmentId },
-      data: { candidateDriverIds: s.candidateDriverIds.slice(1) },
+      data: { candidateDriverIds: s.candidateDriverIds.slice(1), lastNotifiedAt: null },
     })
   })
 
@@ -95,6 +91,12 @@ export async function advanceQueue(shipmentId: string): Promise<void> {
 }
 
 export async function checkTimeouts(): Promise<void> {
+  // Recover a crash before the first offer, or before notifying the next candidate.
+  const waiting = await prisma.shipment.findMany({
+    where: { status: 'SEARCHING', lastNotifiedAt: null, OR: [{ preferredDate: null }, { preferredDate: { lte: new Date(Date.now() + 3 * 60 * 60 * 1000) } }] },
+    select: { id: true }, take: 100,
+  })
+  for (const shipment of waiting) await notifyNextCandidate(shipment.id)
   const cutoff = new Date(Date.now() - OFFER_TIMEOUT_MS)
   const timedOut = await prisma.shipment.findMany({
     where: {
@@ -107,7 +109,7 @@ export async function checkTimeouts(): Promise<void> {
   for (const shipment of timedOut) {
     if (shipment.candidateDriverIds.length > 0) {
       console.log(`[queue] Timeout en shipment ${shipment.id}, avanzando cola`)
-      await advanceQueue(shipment.id)
+      await advanceQueue(shipment.id, shipment.candidateDriverIds[0])
     }
   }
 }

@@ -107,7 +107,7 @@ function getGoogleClientIds(): string[] {
 const googleClient = new OAuth2Client()
 
 function signToken(userId: string): string {
-  return jwt.sign({ userId }, process.env.JWT_SECRET!, {
+  return jwt.sign({ userId, purpose: 'access' }, process.env.JWT_SECRET!, {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   } as jwt.SignOptions)
 }
@@ -502,6 +502,8 @@ export async function updateMe(req: AuthRequest, res: Response, next: NextFuncti
     const email = data.email ? normalizeEmail(data.email) : undefined
 
     if (email) {
+      const current = await prisma.user.findUnique({ where: { id: req.userId! }, select: { email: true } })
+      if (email !== current?.email) throw new AppError('El cambio de email no está habilitado en pruebas internas', 409)
       const existing = await prisma.user.findUnique({ where: { email } })
       if (existing && existing.id !== req.userId) {
         throw new AppError('El email ya esta registrado en otra cuenta', 409)

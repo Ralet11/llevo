@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import type { ParamsDictionary } from 'express-serve-static-core'
-import jwt from 'jsonwebtoken'
+import { accessUserId, requireActiveUser } from '../lib/access'
 import type { ParsedQs } from 'qs'
 import { AppError } from './errorHandler'
 
@@ -12,11 +12,11 @@ export interface AuthRequest<
   userId?: string
 }
 
-export function authenticate(
+export async function authenticate(
   req: AuthRequest,
   _res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return next(new AppError('Token requerido', 401))
@@ -24,10 +24,11 @@ export function authenticate(
 
   const token = authHeader.split(' ')[1]
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string }
-    req.userId = payload.userId
+    const userId = accessUserId(token)
+    await requireActiveUser(userId)
+    req.userId = userId
     next()
-  } catch {
-    next(new AppError('Token inválido o expirado', 401))
+  } catch (err) {
+    next(err instanceof AppError ? err : new AppError('Token inválido o expirado', 401))
   }
 }

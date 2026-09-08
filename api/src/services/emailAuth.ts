@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { randomInt } from 'crypto'
 import { Resend } from 'resend'
 import prisma from '../lib/prisma'
 
@@ -9,7 +10,7 @@ function normalizeEmail(email: string) {
 }
 
 function generateCode() {
-  return String(Math.floor(100000 + Math.random() * 900000))
+  return String(randomInt(100000, 1000000))
 }
 
 export async function createEmailAuthCode(email: string, userId?: string | null) {

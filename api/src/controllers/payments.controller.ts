@@ -1,121 +1,78 @@
-import { createHmac, timingSafeEqual } from 'crypto'
 import { NextFunction, Request, Response } from 'express'
-import prisma from '../lib/prisma'
-import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
+import { AppError } from '../middleware/errorHandler'
+import { serializable } from '../lib/transaction'
 import { emitToUser } from '../lib/socket'
-import { scheduleDemoShipmentLifecycle } from '../services/demoShipmentBot'
+import { isDemoRideBotEmail, scheduleDemoRideCompletion } from '../services/demoRideBot'
+import { DEMO_SHIPMENT_BOT_EMAIL, scheduleDemoShipmentLifecycle } from '../services/demoShipmentBot'
 
-function paymentConfig() {
-  const accessToken = process.env.MP_ACCESS_TOKEN
-  const webhookUrl = process.env.MP_WEBHOOK_URL
-  if (!accessToken || !webhookUrl) throw new AppError('Los pagos todavía no están configurados', 503)
-  return { accessToken, webhookUrl }
+function requireInternalPayment() {
+  if (process.env.INTERNAL_TESTING !== 'true') {
+    throw new AppError('Los cobros están deshabilitados. Usá el entorno de pruebas internas.', 503)
+  }
 }
 
+// No network call or movement of funds. authenticate enforces the tester allowlist.
 export async function createRideCheckout(req: AuthRequest<{ id: string }>, res: Response, next: NextFunction) {
   try {
-    const { accessToken, webhookUrl } = paymentConfig()
-    const booking = await prisma.rideBooking.findFirst({
-      where: { id: req.params.id, passengerId: req.userId!, status: 'APPROVED' },
-      include: { passenger: { select: { name: true, email: true } }, payment: true },
+    requireInternalPayment()
+    const result = await serializable(async tx => {
+      const booking = await tx.rideBooking.findFirst({
+        where: { id: req.params.id, passengerId: req.userId! },
+        include: { payment: true, route: { include: { driver: { select: { email: true } } } } },
+      })
+      if (!booking || !['APPROVED', 'PAID'].includes(booking.status) || booking.pricePerSeat == null) {
+        throw new AppError('Esta reserva no está lista para confirmar', 409)
+      }
+      const amountCents = Math.round(booking.pricePerSeat * booking.seats * 100)
+      if (!Number.isSafeInteger(amountCents) || amountCents <= 0) throw new AppError('Precio inválido', 409)
+      const payment = await tx.payment.upsert({
+        where: { rideBookingId: booking.id },
+        create: { userId: req.userId!, rideBookingId: booking.id, amount: amountCents / 100, netAmount: amountCents / 100,
+          platformFee: 0, amountCents, netAmountCents: amountCents, platformFeeCents: 0,
+          currency: 'ARS', status: 'IN_ESCROW', externalId: 'internal:' + booking.id },
+        update: {},
+      })
+      if (payment.externalId !== 'internal:' + booking.id || payment.status !== 'IN_ESCROW') {
+        throw new AppError('El pago no pertenece a esta prueba activa', 409)
+      }
+      await tx.rideBooking.update({ where: { id: booking.id }, data: { status: 'PAID' } })
+      if (booking.travelRequestId) await tx.travelRequest.update({ where: { id: booking.travelRequestId }, data: { status: 'CONFIRMED' } })
+      return { payment, booking }
     })
-    if (!booking || booking.pricePerSeat == null) throw new AppError('Esta reserva no está lista para pagar', 409)
-
-    const amount = booking.pricePerSeat * booking.seats
-    const amountCents = Math.round(amount * 100)
-    const payment = booking.payment ?? await prisma.payment.create({
-      data: { amount, platformFee: 0, netAmount: amount, amountCents, platformFeeCents: 0, netAmountCents: amountCents, currency: 'ARS', userId: req.userId!, rideBookingId: booking.id },
-    })
-    const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        external_reference: payment.id,
-        notification_url: webhookUrl,
-        items: [{ id: booking.id, title: `Viaje ${booking.originCity} a ${booking.destinationCity}`, quantity: 1, currency_id: 'ARS', unit_price: amount }],
-        payer: booking.passenger.email ? { email: booking.passenger.email, name: booking.passenger.name } : undefined,
-      }),
-    })
-    const data = await response.json() as { id?: string; init_point?: string; sandbox_init_point?: string; message?: string }
-    if (!response.ok || !data.id || !(data.sandbox_init_point || data.init_point)) throw new AppError(data.message || 'No se pudo iniciar el pago', 502)
-    await prisma.payment.update({ where: { id: payment.id }, data: { providerPreferenceId: data.id, externalId: data.id } })
-    res.json({ checkoutUrl: data.sandbox_init_point ?? data.init_point, paymentId: payment.id })
+    for (const id of [req.userId!, result.booking.route.driverId]) emitToUser(id, 'ride:status_changed', { bookingId: result.booking.id, status: 'PAID' })
+    if (isDemoRideBotEmail(result.booking.route.driver.email)) scheduleDemoRideCompletion(result.booking.id)
+    res.json({ simulated: true, checkoutUrl: null, paymentId: result.payment.id })
   } catch (err) { next(err) }
 }
 
 export async function createShipmentCheckout(req: AuthRequest<{ id: string }>, res: Response, next: NextFunction) {
   try {
-    const { accessToken, webhookUrl } = paymentConfig()
-    const job = await prisma.shipmentJob.findFirst({
-      where: { id: req.params.id, status: 'ACTIVE', shipment: { senderId: req.userId!, status: 'ASSIGNED' } },
-      include: {
-        shipment: { select: { senderId: true, originCity: true, destinationCity: true, weightKg: true } },
-        payment: true,
-      },
-    })
-    if (!job || job.quotedTotal <= 0) throw new AppError('Este envio no esta listo para pagar', 409)
-
-    const amount = job.quotedTotal
-    const amountCents = Math.round(amount * 100)
-    const platformFeeCents = Math.round(job.platformFee * 100)
-    const payment = job.payment ?? await prisma.payment.create({
-      data: { amount, platformFee: job.platformFee, netAmount: amount - job.platformFee, amountCents, platformFeeCents, netAmountCents: amountCents - platformFeeCents, currency: 'ARS', userId: req.userId!, shipmentJobId: job.id },
-    })
-    const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        external_reference: payment.id,
-        notification_url: webhookUrl,
-        items: [{ id: job.id, title: `Envio ${job.shipment.originCity} a ${job.shipment.destinationCity}`, quantity: 1, currency_id: 'ARS', unit_price: amount }],
-      }),
-    })
-    const data = await response.json() as { id?: string; init_point?: string; sandbox_init_point?: string; message?: string }
-    if (!response.ok || !data.id || !(data.sandbox_init_point || data.init_point)) throw new AppError(data.message || 'No se pudo iniciar el pago', 502)
-    await prisma.payment.update({ where: { id: payment.id }, data: { providerPreferenceId: data.id, externalId: data.id } })
-    res.json({ checkoutUrl: data.sandbox_init_point ?? data.init_point, paymentId: payment.id })
-  } catch (err) { next(err) }
-}
-
-function validWebhookSignature(req: Request, paymentId: string): boolean {
-  const secret = process.env.MP_WEBHOOK_SECRET
-  const signature = req.header('x-signature')
-  const requestId = req.header('x-request-id')
-  if (!secret || !signature) return false
-  const parts = Object.fromEntries(signature.split(',').map(part => part.trim().split('=')))
-  if (!parts.ts || !parts.v1) return false
-  const manifest = `id:${paymentId.toLowerCase()};request-id:${requestId ?? ''};ts:${parts.ts};`
-  const expected = createHmac('sha256', secret).update(manifest).digest('hex')
-  const actual = parts.v1
-  return expected.length === actual.length && timingSafeEqual(Buffer.from(expected), Buffer.from(actual))
-}
-
-export async function mercadoPagoWebhook(req: Request, res: Response, next: NextFunction) {
-  try {
-    const paymentId = String(req.query['data.id'] ?? (req.body as { data?: { id?: string } })?.data?.id ?? '')
-    if (!paymentId || !validWebhookSignature(req, paymentId)) throw new AppError('Firma de webhook inválida', 401)
-    const accessToken = process.env.MP_ACCESS_TOKEN
-    if (!accessToken) throw new AppError('Pagos no configurados', 503)
-    const providerResponse = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, { headers: { Authorization: `Bearer ${accessToken}` } })
-    if (!providerResponse.ok) throw new AppError('No se pudo verificar el pago', 502)
-    const providerPayment = await providerResponse.json() as { status?: string; external_reference?: string }
-    if (!providerPayment.external_reference) throw new AppError('Pago sin referencia', 400)
-    const payment = await prisma.payment.findUnique({ where: { id: providerPayment.external_reference }, include: { rideBooking: true, shipmentJob: { include: { shipment: true } } } })
-    if (!payment) return res.status(200).json({ ok: true })
-    if (providerPayment.status === 'approved') {
-      await prisma.$transaction(async tx => {
-        await tx.payment.update({ where: { id: payment.id }, data: { status: 'IN_ESCROW', providerPaymentId: paymentId } })
-        if (payment.rideBooking) await tx.rideBooking.update({ where: { id: payment.rideBooking.id }, data: { status: 'PAID' } })
+    requireInternalPayment()
+    const result = await serializable(async tx => {
+      const job = await tx.shipmentJob.findFirst({
+        where: { id: req.params.id, status: 'ACTIVE', shipment: { senderId: req.userId!, status: 'ASSIGNED' } },
+        include: { driver: { select: { email: true } } },
       })
-      if (payment.rideBooking) emitToUser(payment.rideBooking.passengerId, 'ride:status_changed', { bookingId: payment.rideBooking.id, status: 'PAID' })
-      if (payment.shipmentJob) {
-        emitToUser(payment.shipmentJob.shipment.senderId, 'shipment:payment_changed', { shipmentId: payment.shipmentJob.shipmentId, status: 'PAID' })
-        scheduleDemoShipmentLifecycle(payment.shipmentJob.id)
-      }
-    } else if (['rejected', 'cancelled'].includes(providerPayment.status ?? '')) {
-      await prisma.payment.update({ where: { id: payment.id }, data: { status: 'FAILED', providerPaymentId: paymentId } })
-    }
-    res.json({ ok: true })
+      if (!job || job.quotedTotal <= 0) throw new AppError('Este envío no está listo para confirmar', 409)
+      const amountCents = Math.round(job.quotedTotal * 100)
+      const platformFeeCents = Math.round(job.platformFee * 100)
+      const payment = await tx.payment.upsert({
+        where: { shipmentJobId: job.id },
+        create: { userId: req.userId!, shipmentJobId: job.id, amount: amountCents / 100, platformFee: platformFeeCents / 100,
+          netAmount: (amountCents - platformFeeCents) / 100, amountCents, platformFeeCents, netAmountCents: amountCents - platformFeeCents,
+          currency: 'ARS', status: 'IN_ESCROW', externalId: 'internal:' + job.id },
+        update: {},
+      })
+      if (payment.externalId !== 'internal:' + job.id || payment.status !== 'IN_ESCROW') throw new AppError('El pago no pertenece a esta prueba activa', 409)
+      return { job, payment }
+    })
+    for (const id of [req.userId!, result.job.driverId]) emitToUser(id, 'shipment:payment_changed', { shipmentId: result.job.shipmentId, status: 'PAID' })
+    if (result.job.driver.email === DEMO_SHIPMENT_BOT_EMAIL) scheduleDemoShipmentLifecycle(result.job.id)
+    res.json({ simulated: true, checkoutUrl: null, paymentId: result.payment.id })
   } catch (err) { next(err) }
+}
+
+export function mercadoPagoWebhook(_req: Request, res: Response) {
+  res.status(503).json({ error: 'Los cobros externos están deshabilitados en el MVP interno' })
 }

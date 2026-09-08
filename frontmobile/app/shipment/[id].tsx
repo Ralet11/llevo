@@ -42,14 +42,21 @@ export default function ShipmentDetailScreen() {
     }
   }, [id, token])
 
-  useFocusEffect(useCallback(() => { void load() }, [load]))
+  useFocusEffect(useCallback(() => {
+    void load()
+    const interval = setInterval(() => {
+      if (token && id) void fetchShipment(token, id).then(setShipment).catch(() => {})
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [load, token, id]))
 
   async function handlePay() {
     if (!token || !shipment?.job) return
     setPaying(true)
     try {
-      const { checkoutUrl } = await createShipmentCheckout(token, shipment.job.id)
-      await WebBrowser.openBrowserAsync(checkoutUrl)
+      const { checkoutUrl, simulated } = await createShipmentCheckout(token, shipment.job.id)
+      if (simulated) Alert.alert('Pago de prueba confirmado', 'No se realizó ningún cobro. El conductor ya puede continuar con la prueba.')
+      else if (checkoutUrl) await WebBrowser.openBrowserAsync(checkoutUrl)
       await load()
     } catch (err) {
       Alert.alert('No se pudo iniciar el pago', err instanceof Error ? err.message : 'Intentá de nuevo.')
@@ -82,6 +89,7 @@ export default function ShipmentDetailScreen() {
               <Badge status={shipment.status} />
             </View>
             <Text style={styles.route}>{shipment.originCity} - {shipment.destinationCity}</Text>
+            {shipment.isDemo ? <Text style={styles.demoNotice}>RECORRIDO CON BOT · SIN PERSONAS NI DINERO REAL</Text> : null}
             <Text style={styles.createdAt}>Solicitado el {new Date(shipment.createdAt).toLocaleDateString('es-AR', { day: 'numeric', month: 'long' })}</Text>
           </View>
 
@@ -114,8 +122,8 @@ export default function ShipmentDetailScreen() {
           {shipment.status === 'ASSIGNED' && shipment.job && shipment.job.payment?.status !== 'IN_ESCROW' ? (
             <View style={styles.paymentCard}>
               <View style={styles.paymentCopy}>
-                <Text style={styles.paymentTitle}>Pagá el envío para confirmarlo</Text>
-                <Text style={styles.paymentText}>${(shipment.job.payment?.amount ?? shipment.job.quotedTotal).toLocaleString('es-AR')} · Incluye retiro, distancia, tiempo, paquete y servicio. El conductor recibe la confirmación cuando Mercado Pago aprueba el pago.</Text>
+                <Text style={styles.paymentTitle}>Confirmá el pago de prueba</Text>
+                <Text style={styles.paymentText}>Importe simulado: ${(shipment.job.payment?.amount ?? shipment.job.quotedTotal).toLocaleString('es-AR')}. No se cobrará dinero. Al confirmar, el conductor podrá continuar la prueba.</Text>
               </View>
               <View style={styles.priceBreakdown}>
                 <PriceRow label="Tarifa base" amount={shipment.job.baseFee} styles={styles} />
@@ -127,13 +135,13 @@ export default function ShipmentDetailScreen() {
               </View>
               <TouchableOpacity style={[styles.payButton, paying && { opacity: 0.65 }]} onPress={() => void handlePay()} disabled={paying}>
                 {paying ? <ActivityIndicator size="small" color={colors.black} /> : <Ionicons name="card-outline" size={18} color={colors.black} />}
-                <Text style={styles.payButtonText}>{paying ? 'Abriendo pago...' : 'Pagar envío'}</Text>
+                <Text style={styles.payButtonText}>{paying ? 'Confirmando...' : 'Confirmar pago simulado'}</Text>
               </TouchableOpacity>
             </View>
           ) : null}
 
           {shipment.job?.payment?.status === 'IN_ESCROW' ? (
-            <View style={styles.paymentConfirmed}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.paymentConfirmedText}>Pago confirmado. Tu envío está cubierto.</Text></View>
+            <View style={styles.paymentConfirmed}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.paymentConfirmedText}>Pago simulado confirmado. Sin movimiento de dinero.</Text></View>
           ) : null}
         </ScrollView>
       )}
@@ -167,6 +175,7 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   statusTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   eyebrow: { color: colors.textSubtle, fontFamily: Theme.fonts.bold, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.7 },
   route: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 22, marginTop: 14 },
+  demoNotice: { color: colors.warning, fontFamily: Theme.fonts.bold, fontSize: 10, letterSpacing: 0.5, marginTop: 9 },
   createdAt: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, marginTop: 5 },
   card: { padding: 16, borderRadius: Theme.radius.lg, gap: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
   cardTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },

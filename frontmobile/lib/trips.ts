@@ -121,7 +121,7 @@ export function searchTrips(
 
 // ─── Reservas de pasajero ────────────────────────────────────────────────────
 
-export type RideBookingStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAID' | 'CANCELLED'
+export type RideBookingStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAID' | 'CANCELLED' | 'COMPLETED'
 
 export type MyBooking = {
   id: string
@@ -184,5 +184,5 @@ export function cancelBooking(token: string, id: string) {
 }
 
 export function createRideCheckout(token: string, id: string) {
-  return api.post<{ checkoutUrl: string; paymentId: string }>(`/payments/ride-bookings/${id}/checkout`, {}, token)
+  return api.post<{ checkoutUrl: string | null; simulated: boolean; paymentId: string }>(`/payments/ride-bookings/${id}/checkout`, {}, token)
 }

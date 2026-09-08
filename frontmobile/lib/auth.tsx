@@ -185,6 +185,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function persistSession(nextToken: string, nextUser: User) {
+    // Confirm server-side eligibility before persisting a new session.
+    const verified = await api.get<MeResponse>('/auth/me', nextToken)
+    nextUser = normalizeUser(verified.user)
     await SecureStore.setItemAsync(TOKEN_KEY, nextToken)
     setToken(nextToken)
     await setPersistedUser(nextUser)

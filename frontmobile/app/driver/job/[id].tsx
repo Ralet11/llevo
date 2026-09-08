@@ -338,7 +338,7 @@ export default function DriverJobDetailScreen() {
 
           {/* ── Acción: solo si el trabajo sigue activo ── */}
           {job.status === 'ACTIVE' ? (
-            <TouchableOpacity style={s.mapCta} onPress={() => router.push('/driver/job')} activeOpacity={0.85}>
+            <TouchableOpacity style={s.mapCta} onPress={() => router.push({ pathname: '/driver/job', params: { jobId: job.id } })} activeOpacity={0.85}>
               <Ionicons name="navigate" size={18} color={Theme.colors.black} />
               <Text style={s.mapCtaText}>Ver mapa y navegar</Text>
             </TouchableOpacity>

@@ -2,6 +2,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 const app = require('./app.json').expo
 
+if (process.env.EAS_BUILD_PROFILE === 'production') {
+  throw new Error('Esta entrega es un MVP interno. Usá el perfil preview; la publicación en tiendas todavía no está habilitada.')
+}
+
 function loadLocalEnvValue(name) {
   if (process.env[name]) return process.env[name]
 

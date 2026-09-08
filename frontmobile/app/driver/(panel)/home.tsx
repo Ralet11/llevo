@@ -115,10 +115,10 @@ export default function DriverInicioScreen() {
     setResponding(shipmentId)
     setResponseError(null)
     try {
-      await api.post(`/shipments/${shipmentId}/respond`, { action }, token)
+      const response = await api.post<{ job?: { id: string } }>(`/shipments/${shipmentId}/respond`, { action }, token)
       setPendingShipment(prev => (prev?.id === shipmentId ? null : prev))
       setAgendaItems(prev => prev.filter(i => !(i.kind === 'OFFER' && i.shipment.id === shipmentId)))
-      if (action === 'accept') router.replace('/driver/job')
+      if (action === 'accept' && response.job) router.replace({ pathname: '/driver/job', params: { jobId: response.job.id } })
       else void fetchPending()
     } catch (err) {
       setResponseError(err instanceof Error ? err.message : 'Error al responder. Intentá de nuevo.')

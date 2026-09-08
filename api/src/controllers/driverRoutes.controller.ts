@@ -3,6 +3,7 @@ import { z } from 'zod'
 import prisma from '../lib/prisma'
 import { AppError } from '../middleware/errorHandler'
 import { AuthRequest } from '../middleware/authenticate'
+import { serializable } from '../lib/transaction'
 import { buildBypassedDriverVerificationUpdate, isDriverVerificationBypassed } from '../services/didit'
 import { notifyRouteAlertsForNewRoute } from '../services/routeAlerts'
 
@@ -190,46 +191,35 @@ export async function getMyRoutes(req: AuthRequest, res: Response, next: NextFun
 
 export async function updateDriverRoute(req: AuthRequest<RouteParams>, res: Response, next: NextFunction) {
   try {
-    const route = await prisma.driverRoute.findUnique({ where: { id: req.params.id } })
-    if (!route) throw new AppError('Ruta no encontrada', 404)
-    if (route.driverId !== req.userId) throw new AppError('No tenés permiso para editar esta ruta', 403)
-
-    // `city` (local) no es columna: si viene, se mapea a origen y destino.
-    const { city, ...rest } = updateRouteSchema.parse(req.body)
-
-    // Si la ruta va a llevar pasajeros (ya sea porque se activa ahora o porque ya
-    // lo hacía y se cambia vehículo/asientos), revalidar contra el vehículo real.
-    const effectiveCarries = rest.carriesPassengers ?? route.carriesPassengers
-    if (effectiveCarries) {
-      const effectiveVehicleId = rest.vehicleId ?? route.vehicleId ?? undefined
-      const effectiveSeats = rest.seatsOffered ?? route.seatsOffered ?? undefined
-      const vehicleError = await validatePassengerVehicle(req.userId!, effectiveVehicleId, effectiveSeats)
-      if (vehicleError) throw new AppError(vehicleError, 400)
-    }
-
-    const data = city ? { ...rest, originCity: city, destinationCity: city } : rest
-    const updated = await prisma.driverRoute.update({
-      where: { id: req.params.id },
-      data,
+    const updated = await serializable(async tx => {
+      const route = await tx.driverRoute.findFirst({ where: { id: req.params.id, driverId: req.userId! } })
+      if (!route) throw new AppError('Ruta no encontrada', 404)
+      const bookings = await tx.rideBooking.count({ where: { routeId: route.id, status: { in: ['PENDING', 'APPROVED', 'PAID'] } } })
+      const jobs = await tx.shipmentJob.count({ where: { routeId: route.id, status: 'ACTIVE' } })
+      if (bookings || jobs) throw new AppError('La ruta tiene compromisos activos. Finalizalos o cancelalos antes de cambiarla.', 409)
+      const patch = updateRouteSchema.parse(req.body)
+      const merged = Object.fromEntries(Object.entries({ ...route, city: route.originCity, ...patch }).map(([key, value]) => [key, value === null ? undefined : value]))
+      const data = createRouteSchema.parse(merged)
+      if (data.carriesPassengers) {
+        const message = await validatePassengerVehicle(req.userId!, data.vehicleId, data.seatsOffered)
+        if (message) throw new AppError(message, 400)
+      }
+      return tx.driverRoute.update({ where: { id: route.id }, data: { ...toRouteColumns(data), isActive: patch.isActive ?? route.isActive } })
     })
     res.json({ route: updated })
-  } catch (err) {
-    next(err)
-  }
+  } catch (err) { next(err) }
 }
 
 export async function deleteDriverRoute(req: AuthRequest<RouteParams>, res: Response, next: NextFunction) {
   try {
-    const route = await prisma.driverRoute.findUnique({ where: { id: req.params.id } })
-    if (!route) throw new AppError('Ruta no encontrada', 404)
-    if (route.driverId !== req.userId) throw new AppError('No tenés permiso para eliminar esta ruta', 403)
-
-    await prisma.driverRoute.update({
-      where: { id: req.params.id },
-      data: { isActive: false },
+    const updated = await serializable(async tx => {
+      const route = await tx.driverRoute.findFirst({ where: { id: req.params.id, driverId: req.userId! } })
+      if (!route) throw new AppError('Ruta no encontrada', 404)
+      const bookings = await tx.rideBooking.count({ where: { routeId: route.id, status: { in: ['PENDING', 'APPROVED', 'PAID'] } } })
+      const jobs = await tx.shipmentJob.count({ where: { routeId: route.id, status: 'ACTIVE' } })
+      if (bookings || jobs) throw new AppError('La ruta tiene compromisos activos. Finalizalos o cancelalos antes de cambiarla.', 409)
+      return tx.driverRoute.update({ where: { id: route.id }, data: { isActive: false } })
     })
-    res.json({ message: 'Ruta desactivada correctamente' })
-  } catch (err) {
-    next(err)
-  }
+    res.json({ route: updated })
+  } catch (err) { next(err) }
 }

@@ -17,6 +17,9 @@ test('loadEnv aplica valores seguros por defecto', () => {
       JWT_EXPIRES_IN: '7d',
       CORS_ORIGIN: 'http://localhost:3000',
       HTTP_BODY_LIMIT: '1mb',
+      INTERNAL_TESTING: 'false',
+      INTERNAL_TESTER_EMAILS: '',
+      INTERNAL_BOTS_AVAILABLE: 'false',
     },
   )
 })

@@ -47,7 +47,12 @@ app.use(express.urlencoded({ extended: true, limit: process.env.HTTP_BODY_LIMIT 
 app.use('/api/v1', router)
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() })
+  res.json({
+    status: 'ok', release: 'internal-mvp', payments: 'simulated-only',
+    internalTesting: process.env.INTERNAL_TESTING === 'true',
+    internalBotsAvailable: process.env.INTERNAL_TESTING === 'true' && process.env.INTERNAL_BOTS_AVAILABLE === 'true',
+    timestamp: new Date().toISOString(),
+  })
 })
 
 app.get('/health/ready', async (_req, res) => {

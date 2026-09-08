@@ -33,6 +33,7 @@ export default function MyTripsScreen() {
     APPROVED: { label: 'Aprobado · pagá tu lugar', color: colors.lime },
     REJECTED: { label: 'Rechazado', color: colors.danger },
     PAID: { label: 'Confirmado', color: colors.success },
+    COMPLETED: { label: 'Viaje finalizado', color: colors.success },
     CANCELLED: { label: 'Cancelado', color: colors.textMuted },
   }
   const requestStatusMeta: Record<TravelRequestStatus, { label: string; color: string }> = {
@@ -48,14 +49,18 @@ export default function MyTripsScreen() {
   const [travelRequests, setTravelRequests] = useState<TravelRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!token) return
     try {
+      setLoadError(null)
       const [nextBookings, nextRequests] = await Promise.all([fetchMyBookings(token), Promise.resolve([] as TravelRequest[])])
       setBookings(nextBookings)
       setTravelRequests(nextRequests)
-    } catch {} finally {
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'No se pudieron cargar tus viajes')
+    } finally {
       setLoading(false)
     }
   }, [token])
@@ -132,8 +137,9 @@ export default function MyTripsScreen() {
     }
     setBusyId(b.id)
     try {
-      const { checkoutUrl } = await createRideCheckout(token, b.id)
-      await WebBrowser.openBrowserAsync(checkoutUrl)
+      const { checkoutUrl, simulated } = await createRideCheckout(token, b.id)
+      if (simulated) Alert.alert('Pago de prueba confirmado', 'No se realizó ningún cobro. Esta operación sirve únicamente para probar el viaje.')
+      else if (checkoutUrl) await WebBrowser.openBrowserAsync(checkoutUrl)
       await load()
     } catch (err) {
       Alert.alert('No se pudo iniciar el pago', err instanceof Error ? err.message : 'Intentá de nuevo.')
@@ -144,6 +150,7 @@ export default function MyTripsScreen() {
 
   return (
     <ScreenSafeArea style={s.container}>
+      {loadError && <Text accessibilityRole="alert" style={{ color: colors.danger, padding: 16 }}>{loadError}</Text>}
       <View style={s.header}>
         <IconButton name="chevron-back" onPress={() => router.back()} />
         <View style={s.headerCopy}>
@@ -218,11 +225,11 @@ export default function MyTripsScreen() {
                   {b.status === 'APPROVED' ? (
                     <TouchableOpacity style={[s.payBtn, busyId === b.id && { opacity: 0.65 }]} activeOpacity={0.85} onPress={() => void handlePay(b)} disabled={busyId === b.id}>
                       {busyId === b.id ? <ActivityIndicator size="small" color={colors.black} /> : <Ionicons name="card-outline" size={18} color={colors.black} />}
-                      <Text style={s.payBtnText}>{busyId === b.id ? 'Abriendo pago...' : 'Pagar mi lugar'}</Text>
+                      <Text style={s.payBtnText}>{busyId === b.id ? 'Confirmando...' : 'Confirmar pago simulado'}</Text>
                     </TouchableOpacity>
                   ) : null}
 
-                  {b.status === 'PENDING' || b.status === 'APPROVED' ? (
+                  {b.status === 'PENDING' || b.status === 'APPROVED' || b.status === 'PAID' ? (
                     <TouchableOpacity style={s.cancelBtn} activeOpacity={0.7} onPress={() => confirmCancel(b)} disabled={busyId === b.id}>
                       {busyId === b.id
                         ? <ActivityIndicator size="small" color={colors.danger} />

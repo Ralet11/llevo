@@ -45,7 +45,8 @@ type VerifiedDiditWebhook = {
 }
 
 export function isDriverVerificationBypassed(): boolean {
-  return process.env.DIDIT_BYPASS_VERIFICATION?.trim().toLowerCase() === 'true'
+  return process.env.DIDIT_BYPASS_VERIFICATION?.trim().toLowerCase() === 'true' &&
+    (process.env.NODE_ENV === 'development' || process.env.INTERNAL_TESTING === 'true')
 }
 
 function getDiditConfig() {

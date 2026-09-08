@@ -50,6 +50,9 @@ export async function updateVehicle(req: AuthRequest<VehicleParams>, res: Respon
     if (vehicle.driverId !== req.userId) throw new AppError('No tenés permiso para editar este vehículo', 403)
 
     const data = updateVehicleSchema.parse(req.body)
+    if (await prisma.driverRoute.count({ where: { vehicleId: vehicle.id, isActive: true } })) {
+      throw new AppError('Desactivá las rutas de este vehículo antes de editarlo', 409)
+    }
 
     // Si baja los asientos por debajo de lo que alguna ruta ofrece, ajustamos esas
     // rutas para no dejar seatsOffered > seats (invariante que la búsqueda asume).

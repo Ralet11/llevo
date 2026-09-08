@@ -73,9 +73,9 @@ export default function DriverDayDetailScreen() {
     setResponding(shipmentId)
     setResponseError(null)
     try {
-      await api.post(`/shipments/${shipmentId}/respond`, { action }, token)
+      const response = await api.post<{ job?: { id: string } }>(`/shipments/${shipmentId}/respond`, { action }, token)
       if (action === 'accept') {
-        router.replace('/driver/job')
+        if (response.job) router.replace({ pathname: '/driver/job', params: { jobId: response.job.id } })
         return
       }
       setItems(prev => prev.filter(i => !(i.kind === 'OFFER' && i.shipment.id === shipmentId)))
@@ -101,7 +101,7 @@ export default function DriverDayDetailScreen() {
         <ActiveJobCard
           key={item.job.id}
           job={item.job}
-          onViewMap={() => router.push('/driver/job')}
+          onViewMap={() => router.push({ pathname: '/driver/job', params: { jobId: item.job.id } })}
           onPress={() => router.push({ pathname: '/driver/job/[id]', params: { id: item.job.id } })}
         />
       )

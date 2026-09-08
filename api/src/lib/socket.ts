@@ -1,6 +1,6 @@
 import { Server } from 'socket.io'
 import type { Server as HttpServer } from 'http'
-import jwt from 'jsonwebtoken'
+import { accessUserId, requireActiveUser } from './access'
 
 let io: Server | null = null
 
@@ -15,12 +15,13 @@ export function initSocketIO(httpServer: HttpServer): Server {
     pingInterval: 25000,
   })
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token as string | undefined
     if (!token) return next(new Error('No autenticado'))
     try {
-      const payload = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string }
-      socket.data.userId = payload.userId
+      const userId = accessUserId(token)
+      await requireActiveUser(userId)
+      socket.data.userId = userId
       next()
     } catch {
       next(new Error('Token inválido'))

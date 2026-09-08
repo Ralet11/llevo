@@ -43,6 +43,7 @@ const ITEMS: DrawerItem[] = [
   { icon: 'cube-outline', label: 'Mis envios', href: '/(app)/history' },
   { icon: 'car-sport-outline', label: 'Viajes', href: '/(app)/travel' },
   { icon: 'settings-outline', label: 'Configuracion', href: '/(app)/profile' },
+  { icon: 'help-circle-outline', label: 'Guía de pruebas', href: '/(app)/support' },
 ]
 
 function getInitials(name?: string) {

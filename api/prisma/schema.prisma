@@ -34,6 +34,9 @@ model User {
   rating        Float    @default(0)
   ratingCount   Int      @default(0)
   pushToken     String?
+  demoRideBotEnabled     Boolean @default(false)
+  demoShipmentBotEnabled Boolean @default(false)
+  isDemoBot              Boolean @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -364,6 +367,7 @@ model Shipment {
   candidateDriverIds   String[]       @default([])
   lastNotifiedAt       DateTime?
   status               ShipmentStatus @default(SEARCHING)
+  isDemo               Boolean        @default(false)
 
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
@@ -467,6 +471,7 @@ enum RideBookingStatus {
   REJECTED
   PAID
   CANCELLED
+  COMPLETED
 }
 
 // Intención persistente de un pasajero. Puede nacer sin que exista todavía una

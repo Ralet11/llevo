@@ -9,7 +9,8 @@ import { Theme } from '../../constants/theme'
 import { themedStyles } from '../../lib/theme'
 import { useAuth } from '../../lib/auth'
 import { getSocket } from '../../lib/socket'
-import { fetchDriverTravelOpportunities, fetchRideRequests, respondBooking, respondToTravelRequest, type DriverTravelOpportunity, type RideRequest, type RideBookingStatus } from '../../lib/trips'
+import { api } from '../../lib/api'
+import { fetchRideRequests, respondBooking, respondToTravelRequest, type DriverTravelOpportunity, type RideRequest, type RideBookingStatus } from '../../lib/trips'
 
 function initialsOf(name: string) {
   return name.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('')
@@ -25,6 +26,7 @@ function formatDate(ymd: string) {
 const STATUS_META: Partial<Record<RideBookingStatus, { label: string; color: string }>> = {
   APPROVED: { label: 'Aprobado · esperando pago', color: Theme.colors.lime },
   PAID: { label: 'Confirmado', color: Theme.colors.success },
+  COMPLETED: { label: 'Finalizado', color: Theme.colors.success },
 }
 
 export default function DriverRideRequestsScreen() {
@@ -37,10 +39,12 @@ export default function DriverRideRequestsScreen() {
   const load = useCallback(async () => {
     if (!token) return
     try {
-      const [nextRequests, nextOpportunities] = await Promise.all([fetchRideRequests(token), fetchDriverTravelOpportunities(token)])
+      const [nextRequests, nextOpportunities] = await Promise.all([fetchRideRequests(token), Promise.resolve([] as DriverTravelOpportunity[])])
       setRequests(nextRequests)
       setOpportunities(nextOpportunities)
-    } catch {} finally {
+    } catch (err) {
+      Alert.alert('No se pudieron cargar las solicitudes', err instanceof Error ? err.message : 'Volvé a intentar.')
+    } finally {
       setLoading(false)
     }
   }, [token])
@@ -92,6 +96,19 @@ export default function DriverRideRequestsScreen() {
     Alert.alert('Rechazar solicitud', `¿Rechazar a ${r.passenger.name.split(' ')[0]}?`, [
       { text: 'No', style: 'cancel' },
       { text: 'Rechazar', style: 'destructive', onPress: () => void respond(r.id, 'reject') },
+    ])
+  }
+
+  function confirmComplete(id: string) {
+    Alert.alert('Finalizar viaje de prueba', 'Confirmá que completaste el recorrido de prueba con el pasajero.', [
+      { text: 'Volver', style: 'cancel' },
+      { text: 'Finalizar', onPress: () => {
+        if (!token) return
+        setBusyId(id)
+        void api.post(`/trips/bookings/${id}/complete`, {}, token).then(load)
+          .catch(err => Alert.alert('No se pudo finalizar', err instanceof Error ? err.message : 'Volvé a intentar.'))
+          .finally(() => setBusyId(null))
+      } },
     ])
   }
 
@@ -177,6 +194,7 @@ export default function DriverRideRequestsScreen() {
                     </View>
                   </View>
 
+                  {r.status === 'PAID' && <TouchableOpacity style={s.approveBtn} onPress={() => confirmComplete(r.id)} disabled={busyId === r.id}><Text style={s.approveText}>Finalizar viaje de prueba</Text></TouchableOpacity>}
                   {r.status === 'PENDING' ? (
                     <View style={s.actions}>
                       <TouchableOpacity style={[s.rejectBtn, busyId === r.id && s.btnDisabled]} activeOpacity={0.8} onPress={() => confirmReject(r)} disabled={busyId === r.id}>
