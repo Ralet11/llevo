@@ -18,6 +18,11 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  if (err instanceof SyntaxError && 'type' in err && err.type === 'entity.parse.failed') {
+    res.status(400).json({ error: 'El cuerpo JSON no es válido' })
+    return
+  }
+
   if (err instanceof AppError) {
     res.status(err.statusCode).json({ error: err.message })
     return

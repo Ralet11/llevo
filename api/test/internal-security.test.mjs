@@ -11,6 +11,7 @@ import internalBots from '../dist/services/internalBots.js'
 import internalBotsController from '../dist/controllers/internalBots.controller.js'
 import demoRideBot from '../dist/services/demoRideBot.js'
 import demoShipmentBot from '../dist/services/demoShipmentBot.js'
+import errors from '../dist/middleware/errorHandler.js'
 import { Prisma } from '@prisma/client'
 
 const prisma = prismaModule.default
@@ -45,6 +46,16 @@ test('rechaza tokens de setup, sin identidad, expirados y firmados por otra clav
   assert.throws(() => access.accessUserId(jwt.sign({ purpose: 'access', userId: 'tester', exp: 1 }, process.env.JWT_SECRET)))
   assert.throws(() => access.accessUserId(jwt.sign({ purpose: 'access', userId: 'tester' }, 'other-key')))
   assert.equal(access.accessUserId(token({ purpose: 'access', userId: 'tester' })), 'tester')
+})
+
+test('JSON malformado responde 400 y no se registra como error interno', () => {
+  const malformed = new SyntaxError('invalid JSON')
+  malformed.type = 'entity.parse.failed'
+  let status, body
+  const res = { status(value) { status = value; return this }, json(value) { body = value; return this } }
+  errors.errorHandler(malformed, { requestId: 'request' }, res, () => {})
+  assert.equal(status, 400)
+  assert.deepEqual(body, { error: 'El cuerpo JSON no es válido' })
 })
 
 test('cuentas suspendidas y fuera de la lista no tienen acceso', async t => {
