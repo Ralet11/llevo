@@ -11,11 +11,13 @@ import { PaletteName, palettes, Theme } from '../../constants/theme'
 import { useAuth } from '../../lib/auth'
 import { useTheme } from '../../lib/theme'
 
+const SHOW_TEST_CONTROLS = __DEV__ || process.env.EXPO_PUBLIC_SKIP_DRIVER_VERIFICATION === 'true'
+
 function initials(name?: string) { return (name ?? 'U').split(' ').map(part => part[0]).join('').slice(0, 2) }
 function splitName(name?: string) { const [firstName = '', ...last] = (name ?? '').trim().split(/\s+/); return { firstName, lastName: last.join(' ') } }
 
 export default function ProfileScreen() {
-  const { user, updateUser } = useAuth()
+  const { user, updateUser, clearDriverProfile } = useAuth()
   const { palette, paletteName, setPalette } = useTheme()
   const colors = palette.colors
   const s = createStyles(colors)
@@ -33,6 +35,30 @@ export default function ProfileScreen() {
       await updateUser({ name: [firstName, lastName].filter(Boolean).join(' '), email })
       Alert.alert('Perfil actualizado', 'Tus datos se guardaron correctamente.')
     } catch (err) { Alert.alert('No se pudo guardar', err instanceof Error ? err.message : 'Intentá nuevamente.') } finally { setSaving(false) }
+  }
+
+  function confirmWizardReset() {
+    Alert.alert(
+      'Reiniciar wizard de conductor',
+      'Vas a volver al primer paso. Tus rutas y viajes de prueba no se borrarán.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Reiniciar',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await clearDriverProfile()
+                router.replace('/driver')
+              } catch (error) {
+                Alert.alert('No se pudo reiniciar', error instanceof Error ? error.message : 'Intentá nuevamente.')
+              }
+            })()
+          },
+        },
+      ],
+    )
   }
 
   return <ScreenSafeArea style={s.container}>
@@ -70,6 +96,19 @@ export default function ProfileScreen() {
           })}
         </View>
       </View>
+      {SHOW_TEST_CONTROLS ? (
+        <View style={s.testSection}>
+          <View style={s.testHeading}>
+            <Ionicons name="flask-outline" size={18} color={colors.warning} />
+            <Text style={s.testTitle}>Controles de prueba</Text>
+          </View>
+          <Text style={s.testHint}>Disponible solamente en desarrollo y builds internas.</Text>
+          <TouchableOpacity style={s.resetWizardButton} activeOpacity={0.84} onPress={confirmWizardReset}>
+            <Ionicons name="refresh-circle-outline" size={20} color={colors.warning} />
+            <Text style={s.resetWizardText}>Reiniciar wizard de conductor</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <Button label="Guardar cambios" onPress={save} loading={saving} style={s.save} />
     </ScrollView>
   </ScreenSafeArea>
@@ -82,4 +121,10 @@ const createStyles = (colors: typeof Theme.colors) => StyleSheet.create({
   hero: { alignItems: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 24 }, name: { color: colors.text, fontFamily: Theme.fonts.display, fontSize: 24, marginTop: 12 }, rating: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 7 }, ratingText: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16 }, ratingCount: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 13 }, badges: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 7, marginTop: 14 }, newUser: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, textAlign: 'center' }, publicLink: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 19, padding: 8 }, publicLinkText: { color: colors.lime, fontFamily: Theme.fonts.semiBold, fontSize: 14 },
   section: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 20, padding: 16 }, sectionTitle: { color: colors.text, fontFamily: Theme.fonts.bold, fontSize: 16 }, sectionHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 18, marginTop: 4, marginBottom: 14 }, phoneRow: { minHeight: 62, borderTopWidth: 1, borderTopColor: colors.borderSoft, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, paddingTop: 13 }, phoneLabel: { color: colors.textSubtle, fontFamily: Theme.fonts.semiBold, fontSize: 10, letterSpacing: .5 }, phoneValue: { color: colors.text, fontFamily: Theme.fonts.medium, fontSize: 14, marginTop: 4 }, save: { marginTop: 2 },
   paletteGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, paletteOption: { width: '48%', minHeight: 74, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceElevated, padding: 10, justifyContent: 'space-between' }, swatches: { flexDirection: 'row' }, swatch: { width: 20, height: 15, borderRadius: 4, marginRight: -3, borderWidth: 1, borderColor: colors.border }, paletteName: { color: colors.text, fontFamily: Theme.fonts.medium, fontSize: 11, paddingRight: 18 },
+  testSection: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.warning, borderRadius: 20, padding: 16 },
+  testHeading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  testTitle: { color: colors.warning, fontFamily: Theme.fonts.bold, fontSize: 16 },
+  testHint: { color: colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 18, marginTop: 6, marginBottom: 14 },
+  resetWizardButton: { minHeight: 50, borderRadius: 14, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.surfaceElevated, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  resetWizardText: { color: colors.warning, fontFamily: Theme.fonts.bold, fontSize: 13 },
 })
