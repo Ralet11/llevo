@@ -14,12 +14,33 @@ import type { DriverMode, DriverVerificationStatus } from '../../lib/auth'
 import { useAuth } from '../../lib/auth'
 import { getDriverModeMeta } from '../../lib/driver'
 import { api } from '../../lib/api'
-import { fetchVehicles, VEHICLE_TYPE_LABELS, type Vehicle } from '../../lib/vehicles'
+import { createVehicle, fetchVehicles, VEHICLE_TYPE_LABELS, type Vehicle } from '../../lib/vehicles'
 
 type DayKey = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY'
 type VehicleType = 'MOTO' | 'AUTO' | 'CAMIONETA' | 'CAMION'
 type RouteKind = 'INTERCITY' | 'LOCAL'
 type StepKey = 'verify' | 'mode' | 'route' | 'vehicle' | 'capacity' | 'passengers' | 'review' | 'basics' | 'coverage'
+
+type StoredDriverRoute = {
+  id: string
+  kind: RouteKind
+  originCity: string
+  destinationCity: string
+  waypointCities: string[]
+  daysOfWeek: DayKey[]
+  departureTimeFrom?: string | null
+  departureTimeTo?: string | null
+  vehicleType: VehicleType
+  licensePlate?: string | null
+  vehicleModel?: string | null
+  vehicleColor?: string | null
+  maxWeightKg: number
+  pricePerKg?: number | null
+  vehicleId?: string | null
+  carriesPassengers: boolean
+  seatsOffered?: number | null
+  pricePerSeat?: number | null
+}
 
 // Solo para dev/QA: saltea el paso de verificacion (telefono + Didit) del wizard.
 // Combinar con DIDIT_BYPASS_VERIFICATION=true en el backend. Default: false.
@@ -31,7 +52,7 @@ const STEP_TITLES: Record<StepKey, { title: string; subtitle: string }> = {
   route: { title: 'Tu ruta', subtitle: 'Definí desde dónde, hasta dónde y qué días viajás.' },
   vehicle: { title: 'Tu vehículo', subtitle: 'Contanos con qué vas a transportar.' },
   capacity: { title: 'Capacidad y precio', subtitle: 'Cuánto podés llevar y a qué precio.' },
-  passengers: { title: 'Llevar personas', subtitle: 'Si querés, sumá pasajeros en esta misma ruta.' },
+  passengers: { title: 'Asientos y precio', subtitle: 'Definí cuántas personas pueden viajar y el precio por asiento.' },
   review: { title: 'Revisión final', subtitle: 'Revisá los datos y confirmá tu perfil.' },
   basics: { title: 'Datos base', subtitle: 'Tu ciudad y con qué te movés.' },
   coverage: { title: 'Cobertura', subtitle: 'Hasta dónde llegás y cuándo estás disponible.' },
@@ -87,6 +108,8 @@ export default function DriverSetupScreen() {
   const [destinationCity, setDestinationCity] = useState('')
   const [waypointCities, setWaypointCities] = useState<string[]>([])
   const [selectedDays, setSelectedDays] = useState<DayKey[]>([])
+  const [departureTimeFrom, setDepartureTimeFrom] = useState('')
+  const [departureTimeTo, setDepartureTimeTo] = useState('')
   const [vehicleType, setVehicleType] = useState<VehicleType | null>(null)
   const [licensePlate, setLicensePlate] = useState('')
   const [vehicleModel, setVehicleModel] = useState('')
@@ -97,9 +120,10 @@ export default function DriverSetupScreen() {
   const [routeKind, setRouteKind] = useState<RouteKind>(presetKind ?? 'INTERCITY')
 
   // Pasajeros: una ruta INTERCITY puede llevar personas ademas de paquetes.
-  const [carriesPassengers, setCarriesPassengers] = useState(false)
+  const [carriesPassengers, setCarriesPassengers] = useState(mode === 'viajes')
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
+  const [vehicleSeats, setVehicleSeats] = useState(4)
   const [seatsOffered, setSeatsOffered] = useState(3)
   const [pricePerSeat, setPricePerSeat] = useState('')
 
@@ -110,10 +134,11 @@ export default function DriverSetupScreen() {
   const [verificationNote, setVerificationNote] = useState<string | null>(null)
   const [step, setStep] = useState(0)
 
-  // Pasos del wizard segun el modo. Entrega usa campos estructurados; rider/viajes
-  // usan campos genericos. Al agregar una ruta nueva no se re-verifica identidad.
+  // Entrega y Viajes comparten corredor, calendario y vehiculo. Cada modo agrega
+  // solo su capacidad comercial (paquetes o asientos).
   const steps = useMemo<StepKey[]>(() => {
     const entrega = (mode ?? 'entrega') === 'entrega'
+    const viajes = mode === 'viajes'
     const skipVerify = isAddingRoute || SKIP_DRIVER_VERIFICATION
     // Con kind preseteado no mostramos el paso de seleccion de tipo.
     // El paso de pasajeros solo aplica a rutas entre ciudades.
@@ -124,7 +149,8 @@ export default function DriverSetupScreen() {
     const entregaBase: StepKey[] = presetKind
       ? [...entregaCore, 'review']
       : ['mode', ...entregaCore, 'review']
-    const base: StepKey[] = entrega ? entregaBase : ['basics', 'coverage', 'review']
+    const viajesBase: StepKey[] = ['route', 'vehicle', 'passengers', 'review']
+    const base: StepKey[] = entrega ? entregaBase : viajes ? viajesBase : ['basics', 'coverage', 'review']
     return skipVerify ? base : ['verify', ...base]
   }, [mode, isAddingRoute, presetKind, routeKind])
 
@@ -132,11 +158,43 @@ export default function DriverSetupScreen() {
     if (!isAddingRoute && !mode) router.replace('/driver')
   }, [mode, isAddingRoute])
 
-  // Cargamos los vehiculos del conductor para el picker del paso de pasajeros.
+  // Recuperamos flota y ruta principal para que editar/repetir el wizard no
+  // pierda datos ni cree registros duplicados.
   useEffect(() => {
     if (!token) return
-    fetchVehicles(token).then(setVehicles).catch(() => {})
-  }, [token])
+    void (async () => {
+      try {
+        const fleet = await fetchVehicles(token)
+        setVehicles(fleet)
+        const routeId = currentProfile?.primaryRouteId
+        if (!routeId) return
+        const response = await api.get<{ routes: StoredDriverRoute[] }>('/drivers/routes/mine', token)
+        const route = response.routes.find(item => item.id === routeId)
+        if (!route) return
+        setRouteKind(mode === 'viajes' ? 'INTERCITY' : route.kind)
+        setOriginCity(route.originCity)
+        setDestinationCity(route.destinationCity)
+        setWaypointCities(route.waypointCities)
+        setSelectedDays(route.daysOfWeek)
+        setDepartureTimeFrom(route.departureTimeFrom ?? '')
+        setDepartureTimeTo(route.departureTimeTo ?? '')
+        setVehicleType(route.vehicleType)
+        setLicensePlate(route.licensePlate ?? '')
+        setVehicleModel(route.vehicleModel ?? '')
+        setVehicleColor(route.vehicleColor ?? '')
+        setMaxWeightKg(route.maxWeightKg > 0 ? String(route.maxWeightKg) : '')
+        setPricePerKg(route.pricePerKg != null ? String(route.pricePerKg) : '')
+        setSelectedVehicleId(route.vehicleId ?? null)
+        setCarriesPassengers(mode === 'viajes' || route.carriesPassengers)
+        setSeatsOffered(route.seatsOffered ?? 3)
+        setPricePerSeat(route.pricePerSeat != null ? String(route.pricePerSeat) : '')
+        const linkedVehicle = fleet.find(item => item.id === route.vehicleId)
+        if (linkedVehicle) setVehicleSeats(linkedVehicle.seats)
+      } catch {
+        // El wizard sigue utilizable; los errores de guardado se muestran al finalizar.
+      }
+    })()
+  }, [currentProfile?.primaryRouteId, mode, token])
 
   useEffect(() => {
     if (
@@ -160,6 +218,8 @@ export default function DriverSetupScreen() {
   const effectiveMode = mode ?? 'entrega'
   const meta = getDriverModeMeta(effectiveMode)
   const isEntrega = effectiveMode === 'entrega'
+  const isViajes = effectiveMode === 'viajes'
+  const isStructuredRoute = isEntrega || isViajes
   const driverVerificationApproved = user?.driverVerificationStatus === 'APPROVED'
   const verificationOk = driverVerificationApproved || SKIP_DRIVER_VERIFICATION
   const hasDriverVerificationSession =
@@ -198,17 +258,27 @@ export default function DriverSetupScreen() {
     )
   }
 
-  function validateEntrega(): string | null {
-    if (routeKind === 'LOCAL') {
+  function validateStructuredRoute(): string | null {
+    if (!isViajes && routeKind === 'LOCAL') {
       if (!originCity.trim()) return 'Ingresá tu ciudad de operación.'
     } else {
       if (!originCity.trim()) return 'Ingresá la ciudad de origen.'
       if (!destinationCity.trim()) return 'Ingresá la ciudad de destino.'
       if (selectedDays.length === 0) return 'Seleccioná al menos un día.'
+      if (departureTimeFrom && !/^([01]\d|2[0-3]):[0-5]\d$/.test(departureTimeFrom)) return 'Usá formato HH:MM para la hora de salida.'
+      if (departureTimeTo && !/^([01]\d|2[0-3]):[0-5]\d$/.test(departureTimeTo)) return 'Usá formato HH:MM para el fin de la franja.'
     }
     if (!vehicleType) return 'Seleccioná el tipo de vehículo.'
-    const kg = parseFloat(maxWeightKg)
-    if (!maxWeightKg || !Number.isFinite(kg) || kg <= 0) return 'Ingresá el peso máximo en kg.'
+    if (!licensePlate.trim()) return 'Ingresá la patente del vehículo.'
+    if (isEntrega) {
+      const kg = parseFloat(maxWeightKg)
+      if (!maxWeightKg || !Number.isFinite(kg) || kg <= 0) return 'Ingresá el peso máximo en kg.'
+    }
+    if (isViajes) {
+      if (seatsOffered < 1) return 'Ofrecé al menos un asiento.'
+      const price = parseFloat(pricePerSeat)
+      if (!pricePerSeat || !Number.isFinite(price) || price <= 0) return 'Ingresá el precio por asiento.'
+    }
     return null
   }
 
@@ -227,7 +297,7 @@ export default function DriverSetupScreen() {
       return
     }
 
-    const validationError = isEntrega ? validateEntrega() : validateGeneric()
+    const validationError = isStructuredRoute ? validateStructuredRoute() : validateGeneric()
     if (validationError) {
       setError(validationError)
       return
@@ -238,16 +308,31 @@ export default function DriverSetupScreen() {
 
     try {
       let primaryRouteId = currentProfile?.primaryRouteId ?? null
-      if (isEntrega && token) {
+      if (isStructuredRoute && token) {
+        let routeVehicleId = selectedVehicleId
+        if (!routeVehicleId && (isViajes || carriesPassengers)) {
+          const createdVehicle = await createVehicle(token, {
+            type: vehicleType!,
+            licensePlate: licensePlate.trim() || undefined,
+            model: vehicleModel.trim() || undefined,
+            color: vehicleColor.trim() || undefined,
+            seats: vehicleSeats,
+          })
+          routeVehicleId = createdVehicle.id
+          setSelectedVehicleId(createdVehicle.id)
+          setVehicles(previous => [createdVehicle, ...previous])
+        }
         const commonRoute = {
           vehicleType,
           licensePlate: licensePlate.trim() || undefined,
           vehicleModel: vehicleModel.trim() || undefined,
           vehicleColor: vehicleColor.trim() || undefined,
-          maxWeightKg: parseFloat(maxWeightKg),
-          pricePerKg: pricePerKg ? parseFloat(pricePerKg) : undefined,
+          maxWeightKg: isEntrega ? parseFloat(maxWeightKg) : 0,
+          pricePerKg: isEntrega && pricePerKg ? parseFloat(pricePerKg) : undefined,
+          carriesPackages: isEntrega,
         }
-        const routePayload = routeKind === 'LOCAL'
+        const effectiveRouteKind = isViajes ? 'INTERCITY' : routeKind
+        const routePayload = effectiveRouteKind === 'LOCAL'
           ? { kind: 'LOCAL', city: originCity.trim(), ...commonRoute }
           : {
               kind: 'INTERCITY',
@@ -255,11 +340,13 @@ export default function DriverSetupScreen() {
               destinationCity: destinationCity.trim(),
               waypointCities: waypointCities.filter(c => c.trim().length > 0),
               daysOfWeek: selectedDays,
+              departureTimeFrom: departureTimeFrom || undefined,
+              departureTimeTo: departureTimeTo || undefined,
               ...commonRoute,
-              ...(carriesPassengers
+              ...((isViajes || carriesPassengers)
                 ? {
                     carriesPassengers: true,
-                    vehicleId: selectedVehicleId ?? undefined,
+                    vehicleId: routeVehicleId ?? undefined,
                     seatsOffered,
                     pricePerSeat: parseFloat(pricePerSeat),
                   }
@@ -275,10 +362,10 @@ export default function DriverSetupScreen() {
         const isLocal = isEntrega && routeKind === 'LOCAL'
         await saveDriverProfile({
           mode,
-          city: isEntrega ? originCity.trim() : city.trim(),
-          vehicle: isEntrega ? (vehicleType ?? '') : vehicle.trim(),
-          coverage: isEntrega ? (isLocal ? originCity.trim() : destinationCity.trim()) : coverage.trim(),
-          availability: isEntrega ? (isLocal ? 'Envíos locales' : selectedDays.join(', ')) : availability.trim(),
+          city: isStructuredRoute ? originCity.trim() : city.trim(),
+          vehicle: isStructuredRoute ? (vehicleType ?? '') : vehicle.trim(),
+          coverage: isStructuredRoute ? (isLocal ? originCity.trim() : destinationCity.trim()) : coverage.trim(),
+          availability: isStructuredRoute ? (isLocal ? 'Envíos locales' : selectedDays.join(', ')) : availability.trim(),
           notes: notes.trim(),
           onboardingCompleted: true,
           onboardingVersion: 1,
@@ -345,9 +432,13 @@ export default function DriverSetupScreen() {
   const displayTotal = isAddingRoute ? steps.length : steps.length + 1
   const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) ?? null
   // El paso de ruta cambia de titulo segun el tipo (local vs entre ciudades).
-  const heading = currentStepKey === 'route' && routeKind === 'LOCAL'
+  const heading = currentStepKey === 'route' && routeKind === 'LOCAL' && !isViajes
     ? { title: 'Tu ciudad', subtitle: '¿En qué ciudad vas a hacer repartos?' }
-    : STEP_TITLES[currentStepKey]
+    : currentStepKey === 'route' && isViajes
+      ? { title: 'Tu ruta de viaje', subtitle: 'Elegí ciudades de Google y definí cuándo hacés este recorrido.' }
+      : currentStepKey === 'vehicle' && isViajes
+        ? { title: 'Tu vehículo', subtitle: 'Elegí uno guardado o cargá el auto con el que vas a viajar.' }
+        : STEP_TITLES[currentStepKey]
 
   // Valida solo los campos del paso actual antes de avanzar.
   function validateStep(key: StepKey): string | null {
@@ -356,16 +447,20 @@ export default function DriverSetupScreen() {
         if (!verificationOk) return 'Completá la verificación de conductor con Didit antes de continuar.'
         return null
       case 'route':
-        if (routeKind === 'LOCAL') {
+        if (!isViajes && routeKind === 'LOCAL') {
           if (!originCity.trim()) return 'Ingresá tu ciudad de operación.'
           return null
         }
         if (!originCity.trim()) return 'Ingresá la ciudad de origen.'
         if (!destinationCity.trim()) return 'Ingresá la ciudad de destino.'
         if (selectedDays.length === 0) return 'Seleccioná al menos un día.'
+        if (departureTimeFrom && !/^([01]\d|2[0-3]):[0-5]\d$/.test(departureTimeFrom)) return 'Usá formato HH:MM para la hora de salida.'
+        if (departureTimeTo && !/^([01]\d|2[0-3]):[0-5]\d$/.test(departureTimeTo)) return 'Usá formato HH:MM para el fin de la franja.'
         return null
       case 'vehicle':
         if (!vehicleType) return 'Seleccioná el tipo de vehículo.'
+        if (!licensePlate.trim()) return 'Ingresá la patente del vehículo.'
+        if (isViajes && vehicleSeats < 1) return 'Indicá al menos un asiento disponible.'
         return null
       case 'capacity': {
         const kg = parseFloat(maxWeightKg)
@@ -373,9 +468,9 @@ export default function DriverSetupScreen() {
         return null
       }
       case 'passengers':
-        if (carriesPassengers) {
-          if (!selectedVehicleId) return 'Elegí un vehículo para llevar pasajeros.'
+        if (isViajes || carriesPassengers) {
           if (seatsOffered < 1) return 'Ofrecé al menos un asiento.'
+          if (seatsOffered > (selectedVehicle?.seats ?? vehicleSeats)) return 'No podés ofrecer más asientos que los disponibles en el vehículo.'
           const price = parseFloat(pricePerSeat)
           if (!pricePerSeat || !Number.isFinite(price) || price <= 0) return 'Ingresá el precio por asiento.'
         }
@@ -563,7 +658,7 @@ export default function DriverSetupScreen() {
           </View>
         ) : null}
 
-        {currentStepKey === 'route' && routeKind === 'LOCAL' ? (
+        {currentStepKey === 'route' && routeKind === 'LOCAL' && !isViajes ? (
           <View style={styles.form}>
             <CityPicker
               label="Ciudad de operación *"
@@ -639,11 +734,68 @@ export default function DriverSetupScreen() {
                 )
               })}
             </View>
+            <View style={styles.timeRow}>
+              <View style={styles.timeField}>
+                <Input
+                  label="Hora de salida (opcional)"
+                  value={departureTimeFrom}
+                  onChangeText={setDepartureTimeFrom}
+                  placeholder="08:00"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                />
+              </View>
+              <View style={styles.timeField}>
+                <Input
+                  label="Hasta (opcional)"
+                  value={departureTimeTo}
+                  onChangeText={setDepartureTimeTo}
+                  placeholder="09:00"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                />
+              </View>
+            </View>
           </View>
         ) : null}
 
         {currentStepKey === 'vehicle' ? (
           <View style={styles.form}>
+            {vehicles.length > 0 ? (
+              <>
+                <Text style={styles.fieldLabel}>Vehículos guardados</Text>
+                {vehicles.map(savedVehicle => {
+                  const active = selectedVehicleId === savedVehicle.id
+                  return (
+                    <TouchableOpacity
+                      key={savedVehicle.id}
+                      activeOpacity={0.85}
+                      style={[styles.savedVehicleCard, active && styles.modeCardActive]}
+                      onPress={() => {
+                        setSelectedVehicleId(savedVehicle.id)
+                        setVehicleType(savedVehicle.type)
+                        setLicensePlate(savedVehicle.licensePlate ?? '')
+                        setVehicleModel(savedVehicle.model ?? '')
+                        setVehicleColor(savedVehicle.color ?? '')
+                        setVehicleSeats(savedVehicle.seats)
+                        setSeatsOffered(previous => Math.min(previous, savedVehicle.seats))
+                      }}
+                    >
+                      <Ionicons name={savedVehicle.type === 'MOTO' ? 'bicycle' : 'car-sport'} size={21} color="#77B6FF" />
+                      <View style={styles.modeBody}>
+                        <Text style={styles.modeTitle}>{VEHICLE_TYPE_LABELS[savedVehicle.type]}{savedVehicle.model ? ` · ${savedVehicle.model}` : ''}</Text>
+                        <Text style={styles.modeDesc}>{savedVehicle.licensePlate ?? 'Sin patente'} · {savedVehicle.seats} asientos</Text>
+                      </View>
+                      {active ? <Ionicons name="checkmark-circle" size={22} color="#6CE7F4" /> : <View style={styles.modeRadio} />}
+                    </TouchableOpacity>
+                  )
+                })}
+                <TouchableOpacity style={styles.newVehicleLink} onPress={() => setSelectedVehicleId(null)}>
+                  <Ionicons name="add-circle-outline" size={17} color={Theme.colors.lime} />
+                  <Text style={styles.addWaypointText}>Cargar otro vehículo</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
             <Text style={styles.fieldLabel}>Tipo de vehículo *</Text>
             <View style={styles.vehicleGrid}>
               {VEHICLE_OPTIONS.map(v => {
@@ -653,7 +805,10 @@ export default function DriverSetupScreen() {
                     key={v.key}
                     activeOpacity={0.8}
                     style={[styles.vehicleChip, active && styles.vehicleChipActive]}
-                    onPress={() => setVehicleType(v.key)}
+                    onPress={() => {
+                      setSelectedVehicleId(null)
+                      setVehicleType(v.key)
+                    }}
                   >
                     <Text style={[styles.vehicleChipText, active && styles.vehicleChipTextActive]}>
                       {v.label}
@@ -666,24 +821,54 @@ export default function DriverSetupScreen() {
             <Input
               label="Patente *"
               value={licensePlate}
-              onChangeText={setLicensePlate}
+              onChangeText={value => {
+                setSelectedVehicleId(null)
+                setLicensePlate(value)
+              }}
               placeholder="ABC 123"
               autoCapitalize="characters"
             />
             <Input
               label="Modelo del vehículo (opcional)"
               value={vehicleModel}
-              onChangeText={setVehicleModel}
+              onChangeText={value => {
+                setSelectedVehicleId(null)
+                setVehicleModel(value)
+              }}
               placeholder="Renault Logan"
               autoCapitalize="words"
             />
             <Input
               label="Color del vehículo (opcional)"
               value={vehicleColor}
-              onChangeText={setVehicleColor}
+              onChangeText={value => {
+                setSelectedVehicleId(null)
+                setVehicleColor(value)
+              }}
               placeholder="Blanco"
               autoCapitalize="words"
             />
+            {isViajes ? (
+              <>
+                <Text style={styles.fieldLabel}>Asientos disponibles para pasajeros</Text>
+                <View style={styles.seatStepper}>
+                  <TouchableOpacity style={styles.seatStepBtn} onPress={() => {
+                    setSelectedVehicleId(null)
+                    setVehicleSeats(value => Math.max(1, value - 1))
+                    setSeatsOffered(value => Math.min(value, Math.max(1, vehicleSeats - 1)))
+                  }}>
+                    <Ionicons name="remove" size={20} color={Theme.colors.text} />
+                  </TouchableOpacity>
+                  <Text style={styles.seatStepValue}>{vehicleSeats}</Text>
+                  <TouchableOpacity style={styles.seatStepBtn} onPress={() => {
+                    setSelectedVehicleId(null)
+                    setVehicleSeats(value => Math.min(20, value + 1))
+                  }}>
+                    <Ionicons name="add" size={20} color={Theme.colors.text} />
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : null}
           </View>
         ) : null}
 
@@ -716,65 +901,34 @@ export default function DriverSetupScreen() {
 
         {currentStepKey === 'passengers' ? (
           <View style={styles.form}>
-            <TouchableOpacity
-              activeOpacity={0.85}
-              style={[styles.modeCard, carriesPassengers && styles.modeCardActive]}
-              onPress={() => setCarriesPassengers(v => !v)}
-            >
-              <View style={styles.modeIcon}>
-                <Ionicons name="people" size={22} color={Theme.colors.black} />
-              </View>
-              <View style={styles.modeBody}>
-                <Text style={styles.modeTitle}>Llevar personas también</Text>
-                <Text style={styles.modeDesc}>En esta misma ruta podés sumar pasajeros además de paquetes.</Text>
-              </View>
-              {carriesPassengers
-                ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
-                : <View style={styles.modeRadio} />}
-            </TouchableOpacity>
-
-            {!carriesPassengers ? (
-              <Text style={styles.modeHint}>Si lo activás, los usuarios van a poder pedir sumarse a tu viaje ese día.</Text>
-            ) : vehicles.length === 0 ? (
-              <View style={styles.inlineAlert}>
-                <Ionicons name="car-sport" size={15} color={Theme.colors.danger} />
-                <View style={styles.inlineAlertBody}>
-                  <Text style={styles.inlineAlertText}>Primero cargá un vehículo con sus asientos para poder llevar pasajeros.</Text>
-                  <TouchableOpacity style={styles.inlineAlertBtn} activeOpacity={0.8} onPress={() => router.push('/driver/vehicles')}>
-                    <Ionicons name="add" size={14} color={Theme.colors.black} />
-                    <Text style={styles.inlineAlertBtnText}>Agregar vehículo</Text>
-                  </TouchableOpacity>
+            {!isViajes ? (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={[styles.modeCard, carriesPassengers && styles.modeCardActive]}
+                onPress={() => setCarriesPassengers(value => !value)}
+              >
+                <View style={styles.modeIcon}>
+                  <Ionicons name="people" size={22} color="#77B6FF" />
                 </View>
+                <View style={styles.modeBody}>
+                  <Text style={styles.modeTitle}>Llevar personas también</Text>
+                  <Text style={styles.modeDesc}>En esta misma ruta podés sumar pasajeros además de paquetes.</Text>
+                </View>
+                {carriesPassengers
+                  ? <Ionicons name="checkmark-circle" size={22} color="#6CE7F4" />
+                  : <View style={styles.modeRadio} />}
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.infoCard}>
+                <View style={styles.infoIcon}><Ionicons name="people" size={15} color="#071422" /></View>
+                <Text style={styles.infoText}>Los pasajeros verán esta ruta en los días elegidos y podrán solicitar un asiento.</Text>
               </View>
+            )}
+
+            {!isViajes && !carriesPassengers ? (
+              <Text style={styles.modeHint}>Si lo activás, los usuarios van a poder pedir sumarse a tu viaje ese día.</Text>
             ) : (
               <>
-                <Text style={styles.fieldLabel}>Vehículo</Text>
-                {vehicles.map(v => {
-                  const active = selectedVehicleId === v.id
-                  return (
-                    <TouchableOpacity
-                      key={v.id}
-                      activeOpacity={0.85}
-                      style={[styles.modeCard, active && styles.modeCardActive]}
-                      onPress={() => {
-                        setSelectedVehicleId(v.id)
-                        setSeatsOffered(prev => Math.min(prev, v.seats))
-                      }}
-                    >
-                      <View style={styles.modeIcon}>
-                        <Ionicons name={v.type === 'MOTO' ? 'bicycle' : 'car-sport'} size={20} color={Theme.colors.black} />
-                      </View>
-                      <View style={styles.modeBody}>
-                        <Text style={styles.modeTitle}>{VEHICLE_TYPE_LABELS[v.type]}{v.model ? ` · ${v.model}` : ''}</Text>
-                        <Text style={styles.modeDesc}>{v.seats} asientos{v.licensePlate ? ` · ${v.licensePlate}` : ''}</Text>
-                      </View>
-                      {active
-                        ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
-                        : <View style={styles.modeRadio} />}
-                    </TouchableOpacity>
-                  )
-                })}
-
                 <Text style={styles.fieldLabel}>Asientos que ofrecés</Text>
                 <View style={styles.seatStepper}>
                   <TouchableOpacity style={styles.seatStepBtn} activeOpacity={0.8} onPress={() => setSeatsOffered(seat => Math.max(1, seat - 1))}>
@@ -784,11 +938,11 @@ export default function DriverSetupScreen() {
                   <TouchableOpacity
                     style={styles.seatStepBtn}
                     activeOpacity={0.8}
-                    onPress={() => setSeatsOffered(seat => Math.min(selectedVehicle?.seats ?? 20, seat + 1))}
+                    onPress={() => setSeatsOffered(seat => Math.min(selectedVehicle?.seats ?? vehicleSeats, seat + 1))}
                   >
                     <Ionicons name="add" size={20} color={Theme.colors.text} />
                   </TouchableOpacity>
-                  {selectedVehicle ? <Text style={styles.seatStepHint}>de {selectedVehicle.seats} disponibles</Text> : null}
+                  <Text style={styles.seatStepHint}>de {selectedVehicle?.seats ?? vehicleSeats} disponibles</Text>
                 </View>
 
                 <Input
@@ -867,6 +1021,19 @@ export default function DriverSetupScreen() {
                   {carriesPassengers ? (
                     <SummaryRow label="Pasajeros" value={`${seatsOffered} asiento(s) · $${pricePerSeat || '—'}/asiento`} />
                   ) : null}
+                </>
+              ) : isViajes ? (
+                <>
+                  <SummaryRow label="Ruta" value={`${originCity || '—'} → ${destinationCity || '—'}`} />
+                  {waypointCities.filter(cityName => cityName.trim()).length > 0 ? (
+                    <SummaryRow label="Paradas" value={waypointCities.filter(cityName => cityName.trim()).join(', ')} />
+                  ) : null}
+                  <SummaryRow label="Días" value={selectedDays.length ? selectedDays.join(', ') : '—'} />
+                  {departureTimeFrom ? <SummaryRow label="Salida" value={departureTimeTo ? `${departureTimeFrom}–${departureTimeTo}` : departureTimeFrom} /> : null}
+                  <SummaryRow label="Vehículo" value={`${vehicleType ?? '—'}${vehicleModel ? ` · ${vehicleModel}` : ''}`} />
+                  <SummaryRow label="Patente" value={licensePlate || '—'} />
+                  <SummaryRow label="Asientos" value={String(seatsOffered)} />
+                  <SummaryRow label="Precio por asiento" value={pricePerSeat ? `$${pricePerSeat}` : '—'} />
                 </>
               ) : (
                 <>
@@ -1255,6 +1422,8 @@ const styles = themedStyles(() => StyleSheet.create({
     marginTop: 4,
   },
   daysRow: { flexDirection: 'row', gap: 8, marginBottom: 20 },
+  timeRow: { flexDirection: 'row', gap: 10 },
+  timeField: { flex: 1 },
   dayChip: {
     width: 38,
     height: 38,
@@ -1269,6 +1438,19 @@ const styles = themedStyles(() => StyleSheet.create({
   dayChipText: { color: Theme.colors.textMuted, fontFamily: Theme.fonts.bold, fontSize: 13 },
   dayChipTextActive: { color: Theme.colors.black },
   vehicleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 },
+  savedVehicleCard: {
+    minHeight: 70,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: '#10243A',
+    borderWidth: 1,
+    borderColor: '#284664',
+    marginBottom: 8,
+  },
+  newVehicleLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 9, marginBottom: 8 },
   vehicleChip: {
     paddingHorizontal: 16,
     paddingVertical: 10,

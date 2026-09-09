@@ -14,6 +14,7 @@ import demoShipmentBot from '../dist/services/demoShipmentBot.js'
 import driverProfile from '../dist/controllers/driverProfile.controller.js'
 import errors from '../dist/middleware/errorHandler.js'
 import rateLimits from '../dist/middleware/rateLimit.js'
+import matching from '../dist/lib/matching.js'
 import { Prisma } from '@prisma/client'
 
 const prisma = prismaModule.default
@@ -74,6 +75,18 @@ test('los limites autenticados se aislan por usuario aunque compartan IP', () =>
   assert.deepEqual(invokeLimit('tester-a'), { status: 200, passed: true })
   assert.deepEqual(invokeLimit('tester-b'), { status: 200, passed: true })
   assert.deepEqual(invokeLimit('tester-a'), { status: 429, passed: false })
+})
+
+test('las rutas exclusivas de pasajeros no participan del matching de paquetes', async t => {
+  stub(t, prisma.driverRoute, 'findMany', async args => {
+    assert.equal(args.where.carriesPackages, true)
+    return []
+  })
+  assert.deepEqual(await matching.findCandidateDrivers({
+    originCity: 'Buenos Aires',
+    destinationCity: 'Córdoba',
+    weightKg: 5,
+  }), [])
 })
 
 test('cuentas suspendidas y fuera de la lista no tienen acceso', async t => {

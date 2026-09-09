@@ -266,6 +266,7 @@ model DriverRoute {
   vehicleId         String?
   vehicle           Vehicle?    @relation(fields: [vehicleId], references: [id])
   carriesPassengers Boolean     @default(false)
+  carriesPackages   Boolean     @default(true)
   seatsOffered      Int?
   pricePerSeat      Float?
 

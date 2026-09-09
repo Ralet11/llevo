@@ -30,16 +30,20 @@ const routeFieldsSchema = z.object({
   licensePlate: z.string().min(1).optional(),
   vehicleModel: z.string().min(1).optional(),
   vehicleColor: z.string().min(1).optional(),
-  maxWeightKg: z.number().positive(),
+  maxWeightKg: z.number().nonnegative(),
   pricePerKg: z.number().positive().optional(),
   // Pasajeros: una ruta INTERCITY puede llevar personas ademas de paquetes.
   vehicleId: z.string().optional(),
   carriesPassengers: z.boolean().default(false),
+  carriesPackages: z.boolean().default(true),
   seatsOffered: z.number().int().min(1).max(20).optional(),
   pricePerSeat: z.number().positive().optional(),
 })
 
 const createRouteSchema = routeFieldsSchema.superRefine((data, ctx) => {
+  if ((data.kind === 'LOCAL' || data.carriesPackages) && data.maxWeightKg <= 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['maxWeightKg'], message: 'Indicá una capacidad de carga mayor a cero.' })
+  }
   if (data.kind === 'LOCAL') {
     if (!data.city) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['city'], message: 'La ciudad es obligatoria para envios locales.' })
@@ -106,6 +110,7 @@ function toRouteColumns(data: z.infer<typeof routeFieldsSchema>) {
     maxWeightKg: data.maxWeightKg,
     pricePerKg: data.pricePerKg,
     vehicleId: data.vehicleId ?? null,
+    carriesPackages: data.kind === 'LOCAL' ? true : data.carriesPackages,
   }
   if (data.kind === 'LOCAL') {
     // Sin pasajeros en LOCAL por ahora.

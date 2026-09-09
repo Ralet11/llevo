@@ -41,6 +41,7 @@ export async function findCandidateDrivers(params: MatchParams): Promise<Candida
   const routes = await prisma.driverRoute.findMany({
     where: {
       isActive: true,
+      carriesPackages: true,
       driver: { isActive: true, isDemoBot: false, driverVerificationStatus: 'APPROVED' },
       maxWeightKg: { gte: params.weightKg },
       // isActive en una ruta LOCAL significa "online" (presencia en tiempo real).
