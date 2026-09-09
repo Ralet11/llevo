@@ -13,6 +13,7 @@ import demoRideBot from '../dist/services/demoRideBot.js'
 import demoShipmentBot from '../dist/services/demoShipmentBot.js'
 import driverProfile from '../dist/controllers/driverProfile.controller.js'
 import errors from '../dist/middleware/errorHandler.js'
+import rateLimits from '../dist/middleware/rateLimit.js'
 import { Prisma } from '@prisma/client'
 
 const prisma = prismaModule.default
@@ -57,6 +58,22 @@ test('JSON malformado responde 400 y no se registra como error interno', () => {
   errors.errorHandler(malformed, { requestId: 'request' }, res, () => {})
   assert.equal(status, 400)
   assert.deepEqual(body, { error: 'El cuerpo JSON no es válido' })
+})
+
+test('los limites autenticados se aislan por usuario aunque compartan IP', () => {
+  const limiter = rateLimits.rateLimit(1, 60_000)
+  const invokeLimit = userId => {
+    let status = 200
+    let passed = false
+    const req = { userId, ip: '127.0.0.1', path: '/test-user-isolation' }
+    const res = { status(value) { status = value; return this }, json() { return this } }
+    limiter(req, res, () => { passed = true })
+    return { status, passed }
+  }
+
+  assert.deepEqual(invokeLimit('tester-a'), { status: 200, passed: true })
+  assert.deepEqual(invokeLimit('tester-b'), { status: 200, passed: true })
+  assert.deepEqual(invokeLimit('tester-a'), { status: 429, passed: false })
 })
 
 test('cuentas suspendidas y fuera de la lista no tienen acceso', async t => {

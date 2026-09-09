@@ -13,7 +13,11 @@ setInterval(() => {
 
 export function rateLimit(maxRequests: number, windowMs: number, message?: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const key = `${req.ip ?? 'anon'}:${req.path}`
+    // Las rutas autenticadas ya exponen userId. Priorizarlo evita que varios
+    // testers bajo la misma IP/NAT consuman entre todos el mismo cupo.
+    const authenticatedUserId = (req as Request & { userId?: string }).userId
+    const actor = authenticatedUserId ? `user:${authenticatedUserId}` : `ip:${req.ip ?? 'anon'}`
+    const key = `${actor}:${req.path}`
     const now = Date.now()
     const entry = store.get(key)
 
