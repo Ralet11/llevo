@@ -40,6 +40,8 @@ export type DriverProfile = {
   availability: string
   notes: string
   onboardingCompleted: boolean
+  onboardingVersion: number
+  primaryRouteId?: string | null
   updatedAt: string
 }
 
@@ -130,6 +132,10 @@ type MeResponse = {
   }
 }
 
+type DriverProfileResponse = {
+  profile: DriverProfile | null
+}
+
 const AuthContext = createContext<AuthContextType | null>(null)
 
 const TOKEN_KEY = 'llevo_token'
@@ -165,6 +171,8 @@ function normalizeDriverProfile(profile: Partial<DriverProfile> & { mode: Driver
     availability: profile.availability?.trim() ?? '',
     notes: profile.notes?.trim() ?? '',
     onboardingCompleted: Boolean(profile.onboardingCompleted),
+    onboardingVersion: profile.onboardingVersion ?? 1,
+    primaryRouteId: profile.primaryRouteId ?? null,
     updatedAt: profile.updatedAt ?? new Date().toISOString(),
   }
 }
@@ -191,8 +199,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await SecureStore.setItemAsync(TOKEN_KEY, nextToken)
     setToken(nextToken)
     await setPersistedUser(nextUser)
-    setDriverProfile(await readDriverProfile(nextUser.id))
+    const localProfile = await readDriverProfile(nextUser.id)
+    setDriverProfile(await syncDriverProfile(nextToken, nextUser.id, localProfile))
     connectSocket(nextToken)
+  }
+
+  async function cacheDriverProfile(userId: string, profile: DriverProfile | null) {
+    if (!profile) {
+      await SecureStore.deleteItemAsync(getDriverProfileKey(userId))
+      setDriverProfile(null)
+      return null
+    }
+    const normalized = normalizeDriverProfile(profile)
+    await SecureStore.setItemAsync(getDriverProfileKey(userId), JSON.stringify(normalized))
+    setDriverProfile(normalized)
+    return normalized
+  }
+
+  async function syncDriverProfile(currentToken: string, userId: string, localProfile: DriverProfile | null) {
+    const response = await api.get<DriverProfileResponse>('/drivers/profile', currentToken)
+    if (response.profile) return cacheDriverProfile(userId, response.profile)
+
+    // Migracion transparente desde versiones que guardaban el onboarding solo
+    // en SecureStore. Se ejecuta una unica vez cuando el servidor aun no tiene perfil.
+    if (localProfile) {
+      const migrated = await api.put<DriverProfileResponse>('/drivers/profile', localProfile, currentToken)
+      return cacheDriverProfile(userId, migrated.profile)
+    }
+    return cacheDriverProfile(userId, null)
   }
 
   async function readDriverProfile(userId: string) {
@@ -234,11 +268,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const parsedUser = normalizeUser(JSON.parse(storedUser) as Partial<User> & { id: string; name: string })
         setToken(storedToken)
         setUser(parsedUser)
-        setDriverProfile(await readDriverProfile(parsedUser.id))
+        const localProfile = await readDriverProfile(parsedUser.id)
+        setDriverProfile(localProfile)
         connectSocket(storedToken)
 
         try {
           await refreshSession(storedToken)
+          await syncDriverProfile(storedToken, parsedUser.id, localProfile)
         } catch (refreshError) {
           if (refreshError instanceof ApiError && refreshError.status === 401) {
             await SecureStore.deleteItemAsync(TOKEN_KEY)
@@ -338,16 +374,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function saveDriverProfile(data: DriverProfile) {
-    if (!user) return
-    const nextProfile = normalizeDriverProfile(data)
-    await SecureStore.setItemAsync(getDriverProfileKey(user.id), JSON.stringify(nextProfile))
-    setDriverProfile(nextProfile)
+    if (!user || !token) throw new Error('No hay sesion activa')
+    const response = await api.put<DriverProfileResponse>('/drivers/profile', normalizeDriverProfile(data), token)
+    await cacheDriverProfile(user.id, response.profile)
   }
 
   async function clearDriverProfile() {
-    if (!user) return
-    await SecureStore.deleteItemAsync(getDriverProfileKey(user.id))
-    setDriverProfile(null)
+    if (!user || !token) throw new Error('No hay sesion activa')
+    const response = await api.post<DriverProfileResponse>('/drivers/profile/reset-onboarding', {}, token)
+    await cacheDriverProfile(user.id, response.profile)
   }
 
   async function logout() {

@@ -11,6 +11,7 @@ import internalBots from '../dist/services/internalBots.js'
 import internalBotsController from '../dist/controllers/internalBots.controller.js'
 import demoRideBot from '../dist/services/demoRideBot.js'
 import demoShipmentBot from '../dist/services/demoShipmentBot.js'
+import driverProfile from '../dist/controllers/driverProfile.controller.js'
 import errors from '../dist/middleware/errorHandler.js'
 import { Prisma } from '@prisma/client'
 
@@ -115,6 +116,35 @@ test('cada tester solo actualiza sus propios interruptores de bots', async t => 
   })
   assert.equal(result.error, undefined)
   assert.deepEqual(result.body, { available: true, rideEnabled: true, shipmentEnabled: false })
+})
+
+test('el reset del wizard solo funciona para testers internos y conserva la ruta principal', async t => {
+  const previous = {
+    internal: process.env.INTERNAL_TESTING,
+    emails: process.env.INTERNAL_TESTER_EMAILS,
+  }
+  t.after(() => {
+    restoreEnv('INTERNAL_TESTING', previous.internal)
+    restoreEnv('INTERNAL_TESTER_EMAILS', previous.emails)
+  })
+
+  process.env.INTERNAL_TESTING = 'false'
+  assert.equal((await invoke(driverProfile.resetMyDriverOnboarding)).error?.statusCode, 404)
+
+  process.env.INTERNAL_TESTING = 'true'
+  process.env.INTERNAL_TESTER_EMAILS = 'tester@example.invalid'
+  stub(t, prisma.user, 'findUnique', async () => ({ email: 'tester@example.invalid' }))
+  stub(t, prisma.driverProfile, 'findUnique', async () => ({
+    id: 'profile', userId: 'tester', mode: 'entrega', primaryRouteId: 'route', onboardingCompleted: true,
+  }))
+  stub(t, prisma.driverProfile, 'update', async args => ({
+    id: 'profile', userId: 'tester', mode: 'entrega', primaryRouteId: 'route', ...args.data,
+  }))
+
+  const result = await invoke(driverProfile.resetMyDriverOnboarding)
+  assert.equal(result.error, undefined)
+  assert.equal(result.body.profile.onboardingCompleted, false)
+  assert.equal(result.body.profile.primaryRouteId, 'route')
 })
 
 test('el bot de viaje completa la reserva y libera solo el pago simulado', async t => {

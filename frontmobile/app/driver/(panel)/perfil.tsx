@@ -1,19 +1,48 @@
 import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
-import { ScrollView, Text, TouchableOpacity, View } from 'react-native'
+import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native'
 import { ScreenSafeArea } from '../../../components/app/ScreenSafeArea'
 import { DriverOnlineBar } from '../../../components/app/DriverOnlineBar'
 import { Theme } from '../../../constants/theme'
 import { useAuth } from '../../../lib/auth'
 import { styles } from '../_panel'
 
+const SHOW_TEST_CONTROLS = __DEV__ || process.env.EXPO_PUBLIC_SKIP_DRIVER_VERIFICATION === 'true'
+
 export default function DriverPerfilScreen() {
-  const { user, driverProfile, logout } = useAuth()
+  const { user, driverProfile, clearDriverProfile, logout } = useAuth()
   const ratingLabel = user && user.ratingCount > 0 ? user.rating.toFixed(1) : 'Nuevo'
 
   async function handleLogout() {
     await logout()
     router.replace('/onboarding')
+  }
+
+  function confirmWizardReset() {
+    Alert.alert(
+      'Reiniciar wizard',
+      'Vas a volver al primer paso del onboarding de conductor. Tus rutas y viajes de prueba no se borrarán.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Reiniciar',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await clearDriverProfile()
+                router.replace('/driver')
+              } catch (error) {
+                Alert.alert(
+                  'No se pudo reiniciar',
+                  error instanceof Error ? error.message : 'Intentá nuevamente.',
+                )
+              }
+            })()
+          },
+        },
+      ],
+    )
   }
 
   return (
@@ -99,8 +128,18 @@ export default function DriverPerfilScreen() {
 
         {/* Acciones */}
         <View style={styles.section}>
+          {SHOW_TEST_CONTROLS ? (
+            <TouchableOpacity
+              style={[styles.rejectBtn, { borderColor: Theme.colors.warning }]}
+              activeOpacity={0.85}
+              onPress={confirmWizardReset}
+            >
+              <Ionicons name="refresh-circle-outline" size={19} color={Theme.colors.warning} />
+              <Text style={[styles.rejectBtnText, { color: Theme.colors.warning }]}>Reiniciar wizard de conductor</Text>
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity
-            style={styles.rejectBtn}
+            style={[styles.rejectBtn, SHOW_TEST_CONTROLS && { marginTop: 10 }]}
             activeOpacity={0.85}
             onPress={() => router.replace('/(app)')}
           >

@@ -56,6 +56,7 @@ model User {
   travelRequests    TravelRequest[]  @relation("PassengerTravelRequests")
   travelRequestCandidates TravelRequestCandidate[] @relation("TravelRequestCandidateDrivers")
   routeAlerts       RouteAlert[]
+  driverProfile     DriverProfile?
 }
 
 enum DriverVerificationStatus {
@@ -472,6 +473,26 @@ enum RideBookingStatus {
   PAID
   CANCELLED
   COMPLETED
+}
+
+// Estado durable del onboarding de conductor. El backend es la fuente de verdad;
+// el cliente conserva una copia local solamente como cache.
+model DriverProfile {
+  id                  String    @id @default(cuid())
+  userId              String    @unique
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode                String
+  city                String    @default("")
+  vehicle             String    @default("")
+  coverage            String    @default("")
+  availability        String    @default("")
+  notes               String    @default("")
+  onboardingCompleted Boolean   @default(false)
+  onboardingVersion   Int       @default(1)
+  primaryRouteId      String?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 // Intención persistente de un pasajero. Puede nacer sin que exista todavía una

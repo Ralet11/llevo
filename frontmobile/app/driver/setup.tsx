@@ -237,6 +237,7 @@ export default function DriverSetupScreen() {
     setError(null)
 
     try {
+      let primaryRouteId = currentProfile?.primaryRouteId ?? null
       if (isEntrega && token) {
         const commonRoute = {
           vehicleType,
@@ -264,7 +265,10 @@ export default function DriverSetupScreen() {
                   }
                 : {}),
             }
-        await api.post('/drivers/routes', routePayload, token)
+        const routeResponse = primaryRouteId && !isAddingRoute
+          ? await api.patch<{ route: { id: string } }>(`/drivers/routes/${primaryRouteId}`, { ...routePayload, isActive: true }, token)
+          : await api.post<{ route: { id: string } }>('/drivers/routes', routePayload, token)
+        primaryRouteId = routeResponse.route.id
       }
 
       if (!isAddingRoute && mode) {
@@ -277,6 +281,8 @@ export default function DriverSetupScreen() {
           availability: isEntrega ? (isLocal ? 'Envíos locales' : selectedDays.join(', ')) : availability.trim(),
           notes: notes.trim(),
           onboardingCompleted: true,
+          onboardingVersion: 1,
+          primaryRouteId,
           updatedAt: new Date().toISOString(),
         })
       }
@@ -335,6 +341,8 @@ export default function DriverSetupScreen() {
 
   const currentStepKey = steps[Math.min(step, steps.length - 1)]
   const isLastStep = step >= steps.length - 1
+  const displayStep = isAddingRoute ? step + 1 : step + 2
+  const displayTotal = isAddingRoute ? steps.length : steps.length + 1
   const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) ?? null
   // El paso de ruta cambia de titulo segun el tipo (local vs entre ciudades).
   const heading = currentStepKey === 'route' && routeKind === 'LOCAL'
@@ -412,23 +420,18 @@ export default function DriverSetupScreen() {
     <ScreenSafeArea style={styles.container}>
       <View style={styles.header}>
         <IconButton name="chevron-back" onPress={goBack} />
-        <View style={styles.headerCopy}>
-          <Text style={styles.step}>Paso {step + 1} de {steps.length}</Text>
-          <Text style={styles.headerTitle}>{isAddingRoute ? 'Nueva ruta' : 'Configurar perfil'}</Text>
+        <View style={styles.progressHeader}>
+          <Text style={styles.step}>Paso {displayStep} de {displayTotal}</Text>
+          <View style={styles.progressRow}>
+            {Array.from({ length: displayTotal }, (_, idx) => (
+              <View
+                key={idx}
+                style={[styles.progressSegment, idx < displayStep && styles.progressSegmentActive]}
+              />
+            ))}
+          </View>
         </View>
-      </View>
-
-      <View style={styles.progressRow}>
-        {steps.map((key, idx) => (
-          <View
-            key={key}
-            style={[
-              styles.progressSegment,
-              idx < step && styles.progressSegmentDone,
-              idx === step && styles.progressSegmentActive,
-            ]}
-          />
-        ))}
+        <View style={styles.headerSpacer} />
       </View>
 
       <KeyboardAvoidingView
@@ -438,9 +441,18 @@ export default function DriverSetupScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
           <View style={styles.badge}>
-            <Ionicons name={meta.icon} size={18} color={Theme.colors.black} />
+            <Ionicons name={meta.icon} size={16} color="#77B6FF" />
             <Text style={styles.badgeText}>{meta.label}</Text>
           </View>
+          {(currentStepKey === 'mode' || currentStepKey === 'capacity') ? (
+            <View style={styles.heroIllustration}>
+              <View style={styles.speedLines}>
+                <View style={styles.speedLineLong} />
+                <View style={styles.speedLineShort} />
+              </View>
+              <Text style={styles.heroEmoji}>📦</Text>
+            </View>
+          ) : null}
           <Text style={styles.title}>{heading.title}</Text>
           <Text style={styles.description}>{heading.subtitle}</Text>
         </View>
@@ -514,14 +526,14 @@ export default function DriverSetupScreen() {
               onPress={() => setRouteKind('LOCAL')}
             >
               <View style={styles.modeIcon}>
-                <Ionicons name="business" size={22} color={Theme.colors.black} />
+                <Ionicons name="business" size={22} color="#77B6FF" />
               </View>
               <View style={styles.modeBody}>
                 <Text style={styles.modeTitle}>Dentro de mi ciudad</Text>
                 <Text style={styles.modeDesc}>Repartos locales. Te ponés online y recibís envíos al instante.</Text>
               </View>
               {routeKind === 'LOCAL'
-                ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
+                ? <Ionicons name="checkmark-circle" size={22} color="#6CE7F4" />
                 : <View style={styles.modeRadio} />}
             </TouchableOpacity>
 
@@ -531,18 +543,23 @@ export default function DriverSetupScreen() {
               onPress={() => setRouteKind('INTERCITY')}
             >
               <View style={styles.modeIcon}>
-                <Ionicons name="navigate" size={22} color={Theme.colors.black} />
+                <Ionicons name="navigate" size={22} color="#77B6FF" />
               </View>
               <View style={styles.modeBody}>
                 <Text style={styles.modeTitle}>Entre ciudades</Text>
                 <Text style={styles.modeDesc}>Rutas programadas A → B en los días que viajás.</Text>
               </View>
               {routeKind === 'INTERCITY'
-                ? <Ionicons name="checkmark-circle" size={22} color={Theme.colors.lime} />
+                ? <Ionicons name="checkmark-circle" size={22} color="#6CE7F4" />
                 : <View style={styles.modeRadio} />}
             </TouchableOpacity>
 
-            <Text style={styles.modeHint}>{'Después podés sumar el otro tipo desde "Mis rutas".'}</Text>
+            <View style={styles.infoCard}>
+              <View style={styles.infoIcon}>
+                <Ionicons name="information" size={16} color="#071422" />
+              </View>
+              <Text style={styles.infoText}>{'Después podés sumar el otro tipo desde “Mis rutas”.'}</Text>
+            </View>
           </View>
         ) : null}
 
@@ -672,20 +689,28 @@ export default function DriverSetupScreen() {
 
         {currentStepKey === 'capacity' ? (
           <View style={styles.form}>
-            <Input
-              label="Peso máximo que llevás (kg) *"
-              value={maxWeightKg}
-              onChangeText={setMaxWeightKg}
-              placeholder="20"
-              keyboardType="decimal-pad"
-            />
-            <Input
-              label="Precio por kg (opcional)"
-              value={pricePerKg}
-              onChangeText={setPricePerKg}
-              placeholder="150"
-              keyboardType="decimal-pad"
-            />
+            <View style={styles.capacityCard}>
+              <Input
+                label="Peso máximo que llevás (kg) *"
+                value={maxWeightKg}
+                onChangeText={setMaxWeightKg}
+                placeholder="20"
+                keyboardType="decimal-pad"
+              />
+              <Input
+                label="Precio por kg (opcional)"
+                value={pricePerKg}
+                onChangeText={setPricePerKg}
+                placeholder="150"
+                keyboardType="decimal-pad"
+              />
+            </View>
+            <View style={styles.tipCard}>
+              <View style={styles.tipIcon}>
+                <Ionicons name="bulb" size={18} color="#FFD66B" />
+              </View>
+              <Text style={styles.tipText}>Estos datos nos ayudan a mostrarte pedidos que se ajusten a tu capacidad.</Text>
+            </View>
           </View>
         ) : null}
 
@@ -906,47 +931,36 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = themedStyles(() => StyleSheet.create({
-  container: { flex: 1, backgroundColor: Theme.colors.background },
+  container: { flex: 1, backgroundColor: '#071422' },
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    paddingHorizontal: 18,
-    paddingTop: 6,
+    paddingHorizontal: 20,
+    paddingTop: 8,
   },
-  headerCopy: { flex: 1 },
+  progressHeader: { flex: 1, alignItems: 'center', gap: 9 },
+  headerSpacer: { width: 44 },
   step: {
-    color: Theme.colors.lime,
+    color: '#6AA4FF',
     fontFamily: Theme.fonts.bold,
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
-  headerTitle: {
-    color: Theme.colors.text,
-    fontFamily: Theme.fonts.bold,
-    fontSize: 16,
-    marginTop: 4,
-  },
-  content: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 28 },
+  content: { paddingHorizontal: 20, paddingTop: 25, paddingBottom: 28 },
   progressRow: {
     flexDirection: 'row',
     gap: 6,
-    paddingHorizontal: 20,
-    paddingTop: 12,
   },
   progressSegment: {
-    flex: 1,
+    width: 26,
     height: 4,
-    borderRadius: 2,
-    backgroundColor: Theme.colors.border,
-  },
-  progressSegmentDone: {
-    backgroundColor: Theme.colors.lime,
+    borderRadius: 4,
+    backgroundColor: '#213A5B',
   },
   progressSegmentActive: {
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: '#65D5FF',
   },
   footer: {
     flexDirection: 'row',
@@ -955,8 +969,8 @@ const styles = themedStyles(() => StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 14,
     borderTopWidth: 1,
-    borderTopColor: Theme.colors.border,
-    backgroundColor: Theme.colors.background,
+    borderTopColor: '#1E3852',
+    backgroundColor: '#071422',
   },
   footerBack: {
     flex: 1,
@@ -969,15 +983,17 @@ const styles = themedStyles(() => StyleSheet.create({
     alignItems: 'center',
     gap: 14,
     padding: 16,
-    borderRadius: 18,
-    backgroundColor: Theme.colors.surface,
-    borderWidth: 1.5,
-    borderColor: Theme.colors.border,
-    marginBottom: 12,
+    minHeight: 90,
+    borderRadius: 17,
+    backgroundColor: '#10243A',
+    borderWidth: 1,
+    borderColor: '#284664',
+    marginBottom: 10,
   },
   modeCardActive: {
-    borderColor: Theme.colors.lime,
-    backgroundColor: Theme.colors.surfaceElevated,
+    borderColor: '#5597FF',
+    backgroundColor: '#142D4A',
+    borderWidth: 2,
   },
   modeIcon: {
     width: 44,
@@ -985,7 +1001,9 @@ const styles = themedStyles(() => StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: '#102C48',
+    borderWidth: 1,
+    borderColor: '#234A70',
   },
   modeBody: { flex: 1, gap: 3 },
   modeTitle: { color: Theme.colors.text, fontFamily: Theme.fonts.bold, fontSize: 15 },
@@ -1004,6 +1022,27 @@ const styles = themedStyles(() => StyleSheet.create({
     lineHeight: 17,
     marginTop: 2,
   },
+  infoCard: {
+    marginTop: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 14,
+    backgroundColor: '#10243A',
+    borderWidth: 1,
+    borderColor: '#284664',
+  },
+  infoIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#789FD4',
+  },
+  infoText: { flex: 1, color: Theme.colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 11, lineHeight: 16 },
   summaryCard: {
     borderRadius: 18,
     padding: 16,
@@ -1032,11 +1071,10 @@ const styles = themedStyles(() => StyleSheet.create({
     fontSize: 13,
   },
   hero: {
-    padding: 22,
-    borderRadius: 24,
-    backgroundColor: Theme.colors.surface,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
+    position: 'relative',
+    minHeight: 145,
+    paddingHorizontal: 4,
+    paddingTop: 3,
   },
   badge: {
     alignSelf: 'flex-start',
@@ -1046,23 +1084,40 @@ const styles = themedStyles(() => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: Theme.colors.lime,
+    backgroundColor: '#173254',
+    borderWidth: 1,
+    borderColor: '#294E77',
   },
-  badgeText: { color: Theme.colors.black, fontFamily: Theme.fonts.bold, fontSize: 12 },
+  badgeText: { color: '#DCEAFF', fontFamily: Theme.fonts.bold, fontSize: 12 },
   title: {
     color: Theme.colors.text,
     fontFamily: Theme.fonts.display,
-    fontSize: 27,
+    maxWidth: '76%',
+    fontSize: 28,
     lineHeight: 31,
-    marginTop: 14,
+    marginTop: 17,
   },
   description: {
     color: Theme.colors.textMuted,
     fontFamily: Theme.fonts.medium,
     fontSize: 13,
     lineHeight: 20,
-    marginTop: 12,
+    maxWidth: '82%',
+    marginTop: 8,
   },
+  heroIllustration: {
+    position: 'absolute',
+    right: 2,
+    top: 22,
+    width: 104,
+    height: 82,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  heroEmoji: { fontSize: 55, lineHeight: 65 },
+  speedLines: { position: 'absolute', left: 0, top: 29, gap: 8 },
+  speedLineLong: { width: 29, height: 4, borderRadius: 3, backgroundColor: '#4C8BDC', transform: [{ rotate: '-18deg' }] },
+  speedLineShort: { width: 20, height: 4, borderRadius: 3, backgroundColor: '#4C8BDC', transform: [{ rotate: '-18deg' }] },
   verificationCard: {
     marginTop: 18,
     padding: 18,
@@ -1161,7 +1216,35 @@ const styles = themedStyles(() => StyleSheet.create({
   verificationSecondaryBtn: {
     marginTop: 0,
   },
-  form: { marginTop: 20 },
+  form: { marginTop: 12 },
+  capacityCard: {
+    padding: 14,
+    paddingBottom: 0,
+    borderRadius: 18,
+    backgroundColor: '#10243A',
+    borderWidth: 1,
+    borderColor: '#284664',
+  },
+  tipCard: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#10243A',
+    borderWidth: 1,
+    borderColor: '#284664',
+  },
+  tipIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 214, 107, 0.10)',
+  },
+  tipText: { flex: 1, color: Theme.colors.textMuted, fontFamily: Theme.fonts.medium, fontSize: 12, lineHeight: 17 },
   fieldLabel: {
     color: Theme.colors.textSubtle,
     fontFamily: Theme.fonts.bold,
